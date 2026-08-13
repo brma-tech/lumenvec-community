@@ -1,0 +1,345 @@
+openapi: 3.1.0
+info:
+  title: LumenVec API
+  version: 1.0.0
+  description: Versioned HTTP API for LumenVec vector operations.
+servers:
+  - url: http://localhost:19190
+paths:
+  /v1/admin/checkpoint:
+    post:
+      summary: Create a durable recovery checkpoint
+      operationId: createCheckpoint
+      responses:
+        "204":
+          description: Checkpoint completed.
+        "500":
+          description: Checkpoint failed.
+  /v1/health:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: Service is alive.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+  /v1/livez:
+    get:
+      summary: Liveness check
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+  /v1/readyz:
+    get:
+      summary: Readiness check
+      responses:
+        "200":
+          description: Service is ready to receive traffic.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ready
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/vectors:
+    get:
+      summary: List vectors
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: after
+          in: query
+          schema:
+            type: string
+        - name: ids_only
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Vector page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListVectorsResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Add one vector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Vector"
+      responses:
+        "201":
+          description: Vector created.
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/vectors/batch:
+    post:
+      summary: Add vectors in batch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vectors]
+              properties:
+                vectors:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Vector"
+      responses:
+        "201":
+          description: Vectors created.
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/vectors/stream:
+    post:
+      summary: Stream vectors as newline-delimited JSON
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema:
+              type: string
+              format: binary
+              description: One Vector JSON object per line.
+      responses:
+        "201":
+          description: Number of committed vectors.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [committed]
+                properties:
+                  committed:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/vectors/{id}:
+    get:
+      summary: Get one vector
+      parameters:
+        - $ref: "#/components/parameters/VectorID"
+      responses:
+        "200":
+          description: Vector payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vector"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      summary: Delete one vector
+      parameters:
+        - $ref: "#/components/parameters/VectorID"
+      responses:
+        "204":
+          description: Vector deleted.
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/vectors/search:
+    post:
+      summary: Search nearest vectors
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Search results.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SearchResult"
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/vectors/search/batch:
+    post:
+      summary: Search multiple query vectors
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queries]
+              properties:
+                queries:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/BatchSearchQuery"
+      responses:
+        "200":
+          description: Batch search results.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BatchSearchResult"
+        "400":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: Optional request identifier returned by LumenVec and included in access logs.
+      schema:
+        type: string
+        maxLength: 128
+    VectorID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Error:
+      description: Error response.
+      headers:
+        X-Request-ID:
+          description: Request identifier generated or accepted by LumenVec.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    Vector:
+      type: object
+      required: [id, values]
+      properties:
+        id:
+          type: string
+        values:
+          type: array
+          items:
+            type: number
+            format: double
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        namespace:
+          type: string
+          description: Optional tenant isolation namespace.
+    ListVectorsResponse:
+      type: object
+      required: [vectors]
+      properties:
+        vectors:
+          type: array
+          items:
+            $ref: "#/components/schemas/Vector"
+        next_cursor:
+          type: string
+    SearchRequest:
+      type: object
+      required: [values, k]
+      properties:
+        values:
+          type: array
+          items:
+            type: number
+            format: double
+        k:
+          type: integer
+          minimum: 1
+        metric:
+          type: string
+          enum: [l2, cosine, inner_product]
+          default: l2
+          description: Distance metric used for ranking, with or without filters.
+        filter_ids:
+          type: array
+          items:
+            type: string
+        text_query:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        namespace:
+          type: string
+          description: Restrict results to this tenant isolation namespace.
+    BatchSearchQuery:
+      allOf:
+        - $ref: "#/components/schemas/SearchRequest"
+        - type: object
+          properties:
+            id:
+              type: string
+    SearchResult:
+      type: object
+      required: [id, distance]
+      properties:
+        id:
+          type: string
+        distance:
+          type: number
+          format: double
+    BatchSearchResult:
+      type: object
+      required: [id, results]
+      properties:
+        id:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string

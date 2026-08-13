@@ -1,0 +1,318 @@
+syntax = "proto3";
+
+package lumenvec;
+
+option go_package = "lumenvec/api/proto;lumenvecpb";
+
+service VectorService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc ListVectors(ListVectorsRequest) returns (ListVectorsResponse);
+  rpc AddVector(AddVectorRequest) returns (AddVectorResponse);
+  rpc AddVectorsBatch(AddVectorsBatchRequest) returns (AddVectorsBatchResponse);
+  rpc GetVector(GetVectorRequest) returns (GetVectorResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc SearchBatch(SearchBatchRequest) returns (SearchBatchResponse);
+  rpc DeleteVector(DeleteVectorRequest) returns (DeleteVectorResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+}
+
+message ListVectorsRequest {
+  int32 limit = 1;
+  string cursor = 2;
+  bool ids_only = 3;
+}
+
+// ClusterControl is an internal, additive control-plane contract. It is
+// intentionally separate from VectorService so data-plane clients remain
+// compatible while nodes exchange election terms and fencing state.
+service ClusterControl {
+  rpc Campaign(CampaignRequest) returns (CampaignResponse);
+  rpc EnsureLeader(EnsureLeaderRequest) returns (EnsureLeaderResponse);
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+}
+
+// DataPlaneTransfer is an internal streaming transport for immutable ANN
+// artifacts. It is intentionally separate from VectorService: public clients
+// cannot stage cluster generations through the data-plane API.
+service DataPlaneTransfer {
+  rpc ReservePrebuiltIDs(ReservePrebuiltIDsRequest) returns (ReservePrebuiltIDsResponse);
+  rpc UploadPrebuiltSnapshot(stream UploadPrebuiltSnapshotRequest) returns (UploadPrebuiltSnapshotResponse);
+  rpc ApplyPrebuiltSegment(stream ApplyPrebuiltSegmentRequest) returns (ApplyPrebuiltSegmentResponse);
+  // BuildPrebuiltSegment streams canonical vectors to the owning data node.
+  // The destination reserves local IDs, builds the ANN graph and commits the
+  // durable generation, avoiding coordinator-side HNSW construction.
+  rpc BuildPrebuiltSegment(stream BuildPrebuiltSegmentRequest) returns (BuildPrebuiltSegmentResponse);
+  rpc ExportSealedANNRecords(ExportSealedANNRecordsRequest) returns (stream ExportSealedANNRecordsResponse);
+  rpc ExportANNState(ExportANNStateRequest) returns (stream ExportANNStateResponse);
+  rpc SnapshotMutableANNRecords(SnapshotMutableANNRecordsRequest) returns (SnapshotMutableANNRecordsResponse);
+  rpc GetDeltaOffset(GetDeltaOffsetRequest) returns (GetDeltaOffsetResponse);
+  rpc GetVectorCount(GetVectorCountRequest) returns (GetVectorCountResponse);
+  rpc ReplayDeltas(ReplayDeltasRequest) returns (stream DeltaMutation);
+  rpc GetANNProfile(GetANNProfileRequest) returns (GetANNProfileResponse);
+}
+
+message ExportSealedANNRecordsRequest {}
+
+message ExportSealedANNRecordsResponse {
+  int32 segment_index = 1;
+  PrebuiltVectorRecord record = 2;
+  bool end_segment = 3;
+}
+
+message ExportANNStateRequest {}
+
+message ExportANNStateResponse {
+  enum Kind {
+    BEGIN = 0;
+    SEALED_RECORD = 1;
+    END_SEGMENT = 2;
+    TAIL_RECORD = 3;
+    END = 4;
+  }
+  Kind kind = 1;
+  uint64 epoch = 2;
+  uint64 delta_offset = 3;
+  int32 segment_index = 4;
+  PrebuiltVectorRecord record = 5;
+  uint64 cardinality = 6;
+  string checksum = 7;
+}
+
+message SnapshotMutableANNRecordsRequest {}
+
+message SnapshotMutableANNRecordsResponse {
+  repeated PrebuiltVectorRecord records = 1;
+}
+
+message GetDeltaOffsetRequest {}
+
+message GetDeltaOffsetResponse {
+  uint64 offset = 1;
+}
+
+message GetVectorCountRequest {}
+
+message GetVectorCountResponse {
+  uint64 count = 1;
+}
+
+message ReplayDeltasRequest {
+  uint64 after_offset = 1;
+}
+
+message DeltaMutation {
+  uint64 offset = 1;
+  string vector_id = 2;
+  bool deleted = 3;
+  repeated float values = 4 [packed = true];
+}
+
+message GetANNProfileRequest {}
+
+message GetANNProfileResponse {
+  int32 m = 1;
+  int32 ef_construction = 2;
+  int32 ef_search = 3;
+  bool segment_routing = 4;
+}
+
+message SnapshotManifest {
+  string segment_id = 1;
+  int32 first_id = 2;
+  int32 last_id = 3;
+  int32 nodes = 4;
+  int32 dimension = 5;
+  string metric = 6;
+  int32 m = 7;
+  int32 ef_construction = 8;
+  int64 payload_bytes = 9;
+  string payload_sha256 = 10;
+}
+
+message ReservePrebuiltIDsRequest {
+  repeated string ids = 1;
+}
+
+message IDMapping {
+  string id = 1;
+  int32 internal_id = 2;
+}
+
+message ReservePrebuiltIDsResponse {
+  repeated IDMapping mappings = 1;
+}
+
+message UploadPrebuiltSnapshotRequest {
+  oneof body {
+    SnapshotManifest manifest = 1;
+    bytes chunk = 2;
+  }
+}
+
+message UploadPrebuiltSnapshotResponse {
+  string artifact_path = 1;
+  int64 bytes_received = 2;
+}
+
+message PrebuiltVectorRecord {
+  string id = 1;
+  int32 internal_id = 2;
+  repeated float values = 3 [packed = true];
+}
+
+message ApplyPrebuiltSegmentRequest {
+  oneof body {
+    SnapshotManifest manifest = 1;
+    PrebuiltVectorRecord record = 2;
+  }
+}
+
+message ApplyPrebuiltSegmentResponse {
+  string segment_id = 1;
+  int32 vectors_committed = 2;
+}
+
+message BuildPrebuiltSegmentRequest {
+  oneof body {
+    SnapshotManifest manifest = 1;
+    PrebuiltVectorRecord record = 2;
+  }
+}
+
+message BuildPrebuiltSegmentResponse {
+  SnapshotManifest manifest = 1;
+}
+
+message CampaignRequest {
+  string candidate_id = 1;
+  uint64 last_offset = 2;
+}
+
+message CampaignResponse {
+  uint64 term = 1;
+  string leader_id = 2;
+  uint32 votes = 3;
+  uint32 quorum = 4;
+}
+
+message EnsureLeaderRequest {
+  string candidate_id = 1;
+  uint64 term = 2;
+}
+
+message EnsureLeaderResponse {
+  bool accepted = 1;
+}
+
+message ConsensusEntry {
+  uint64 index = 1;
+  uint64 term = 2;
+  string operation_id = 3;
+  bytes payload = 4;
+}
+
+message AppendEntriesRequest {
+  uint32 shard_id = 1;
+  string leader_id = 2;
+  uint64 term = 3;
+  uint64 prev_index = 4;
+  uint64 prev_term = 5;
+  repeated ConsensusEntry entries = 6;
+  uint64 leader_commit = 7;
+}
+
+message AppendEntriesResponse {
+  bool accepted = 1;
+  uint64 term = 2;
+  uint64 match_index = 3;
+}
+
+message ListVectorsResponse {
+  repeated Vector vectors = 1;
+  string next_cursor = 2;
+}
+
+message Vector {
+  string id = 1;
+  repeated double values = 2;
+  map<string, string> metadata = 3;
+  repeated float values_f32 = 4 [packed = true];
+}
+
+message AddVectorRequest {
+  string id = 1;
+  repeated double values = 2;
+  map<string, string> metadata = 3;
+}
+
+message AddVectorResponse {
+  bool success = 1;
+}
+
+message AddVectorsBatchRequest {
+  repeated Vector vectors = 1;
+}
+
+message AddVectorsBatchResponse {
+  bool success = 1;
+}
+
+message GetVectorRequest {
+  string id = 1;
+}
+
+message GetVectorResponse {
+  Vector vector = 1;
+}
+
+message SearchRequest {
+  repeated double values = 1;
+  int32 top_k = 2;
+  repeated string filter_ids = 3;
+  string text_query = 4;
+  string metric = 5;
+  map<string, string> metadata = 6;
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchBatchQuery {
+  string id = 1;
+  repeated double values = 2;
+  int32 top_k = 3;
+  // Optional compact representation; clients may continue using values.
+  repeated float values_f32 = 4 [packed = true];
+}
+
+message SearchBatchRequest {
+  repeated SearchBatchQuery queries = 1;
+}
+
+message SearchBatchResult {
+  string id = 1;
+  repeated SearchResult results = 2;
+}
+
+message SearchBatchResponse {
+  repeated SearchBatchResult results = 1;
+}
+
+message SearchResult {
+  string id = 1;
+  double distance = 2;
+}
+
+message DeleteVectorRequest {
+  string id = 1;
+}
+
+message DeleteVectorResponse {
+  bool success = 1;
+}

@@ -1,0 +1,32 @@
+{
+  "contractMajor": 1,
+  "http": {
+    "operations": {
+      "/v1/health": ["get"],
+      "/v1/vectors": ["get", "post"],
+      "/v1/vectors/batch": ["post"],
+      "/v1/vectors/stream": ["post"],
+      "/v1/vectors/{id}": ["get", "delete"],
+      "/v1/vectors/search": ["post"],
+      "/v1/vectors/search/batch": ["post"]
+    },
+    "requiredSchemaFields": {
+      "Vector": ["id", "values", "namespace"],
+      "SearchRequest": ["values", "k", "namespace"]
+    }
+  },
+  "grpc": {
+    "publicServices": {
+      "VectorService": [
+        "Health",
+        "ListVectors",
+        "AddVector",
+        "AddVectorsBatch",
+        "GetVector",
+        "Search",
+        "SearchBatch",
+        "DeleteVector"
+      ]
+    }
+  }
+}

@@ -1,0 +1,22 @@
+image:
+  repository: lumenvec
+  tag: latest
+  pullPolicy: IfNotPresent
+replicaCount: 1
+service:
+  type: ClusterIP
+  httpPort: 19190
+  grpcPort: 19191
+persistence:
+  enabled: true
+  size: 20Gi
+  storageClass: ""
+resources:
+  requests: {cpu: 250m, memory: 512Mi}
+  limits: {cpu: "2", memory: 2Gi}
+security:
+  apiKey: ""
+profiling:
+  addr: ""
+admin:
+  enabled: false
