@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "1.0.0",
+  "stability": "stable",
+  "review": {
+    "status": "TECHNICAL_BASELINE",
+    "releaseApprovalRequired": true
+  },
+  "sources": [
+    {
+      "kind": "openapi",
+      "path": "api/openapi.yaml",
+      "sha256": "54459154acccf18ad658d978802cc74d5d88206981851ced1f53179964a61682"
+    },
+    {
+      "kind": "protobuf",
+      "path": "api/proto/service.proto",
+      "sha256": "527153b1905d4c7c25976fb3bcb3d53dfc9a6f0c4eefac1cb6aecbb84b4dda15"
+    }
+  ],
+  "consumers": [
+    "pkg/client",
+    "sdks/python",
+    "sdks/javascript",
+    "sdks/rust"
+  ],
+  "policy": {
+    "allowedChangeTypes": [
+      "PATCH_ADDITIVE",
+      "MINOR_ADDITIVE",
+      "MAJOR_BREAKING_WITH_MIGRATION"
+    ],
+    "forbiddenSourcePrefixes": [
+      "cmd/",
+      "internal/"
+    ]
+  }
+}

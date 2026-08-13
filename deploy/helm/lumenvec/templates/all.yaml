@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-lumenvec
+spec:
+  type: {{ .Values.service.type }}
+  selector: {app: {{ .Release.Name }}-lumenvec}
+  ports:
+    - {name: http, port: {{ .Values.service.httpPort }}, targetPort: http}
+    - {name: grpc, port: {{ .Values.service.grpcPort }}, targetPort: grpc}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-lumenvec
+spec:
+  serviceName: {{ .Release.Name }}-lumenvec
+  replicas: {{ .Values.replicaCount }}
+  selector: {matchLabels: {app: {{ .Release.Name }}-lumenvec}}
+  template:
+    metadata: {labels: {app: {{ .Release.Name }}-lumenvec}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532}
+      containers:
+        - name: lumenvec
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - {name: VECTOR_DB_PROTOCOL, value: http}
+            - {name: VECTOR_DB_PORT, value: "19190"}
+            - {name: VECTOR_DB_SNAPSHOT_PATH, value: /data/snapshot.json}
+            - {name: VECTOR_DB_WAL_PATH, value: /data/wal.log}
+            - {name: VECTOR_DB_VECTOR_PATH, value: /data/vectors}
+            - {name: VECTOR_DB_PPROF_ADDR, value: {{ .Values.profiling.addr | quote }}}
+            - {name: VECTOR_DB_ADMIN_ENABLED, value: {{ .Values.admin.enabled | quote }}}
+            - {name: VECTOR_DB_SECURITY_AUTH_ENABLED, value: {{ ne .Values.security.apiKey "" | quote }}}
+            - {name: VECTOR_DB_SECURITY_API_KEY, valueFrom: {secretKeyRef: {name: {{ .Release.Name }}-lumenvec, key: api-key, optional: true}}}
+            - name: VECTOR_DB_API_KEY
+              valueFrom: {secretKeyRef: {name: {{ .Release.Name }}-lumenvec, key: api-key, optional: true}}
+          ports: [{name: http, containerPort: 19190}, {name: grpc, containerPort: 19191}]
+          volumeMounts: [{name: data, mountPath: /data}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          readinessProbe: {httpGet: {path: /readyz, port: http}}
+          livenessProbe: {httpGet: {path: /livez, port: http}}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: {{ .Values.persistence.size }}}}
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: {{ .Release.Name }}-lumenvec}
+type: Opaque
+stringData: {api-key: {{ .Values.security.apiKey | quote }}}

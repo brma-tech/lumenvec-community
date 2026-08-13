@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>LumenVec Studio</title>
+  <link rel="icon" type="image/png" href="/admin/lumenvec-logo.png">
+  <link rel="stylesheet" href="/admin/styles.css">
+</head>
+<body>
+  <div id="auth" class="auth-shell">
+    <form id="login-form" class="login-card">
+      <div class="brand-hero"><img src="/admin/lumenvec-logo.png" alt="LumenVec"></div>
+      <p class="eyebrow">LUMENVEC CONTROL PLANE</p>
+      <h1>Admin Studio</h1>
+      <p class="muted">Conecte-se ao nó usando uma chave administrativa. A chave permanece somente nesta aba.</p>
+      <label>API key<input id="api-key" type="password" autocomplete="off" required placeholder="••••••••••••"></label>
+      <button type="submit">Conectar ao cluster</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside>
+      <div class="wordmark"><span><img src="/admin/lumenvec-logo.png" alt=""></span><strong>LumenVec</strong></div>
+      <nav>
+        <button class="nav-item active" data-page="overview">Visão geral</button>
+        <button class="nav-item" data-page="monitor">Monitor</button>
+        <button class="nav-item" data-page="explorer">Vector Explorer</button>
+        <button class="nav-item" data-page="cluster">Cluster</button>
+        <button class="nav-item" data-page="settings">Configurações</button>
+      </nav>
+      <div class="side-status"><i></i><span>Conectado</span><small id="side-node">nó local</small></div>
+    </aside>
+
+    <main>
+      <header>
+        <div><p class="eyebrow">ADMIN STUDIO</p><h2 id="page-title">Visão geral</h2></div>
+        <div class="header-actions"><span id="updated">agora</span><button class="ghost" id="refresh">Atualizar</button><button class="icon" id="logout" aria-label="Sair">↗</button></div>
+      </header>
+
+      <section id="page-overview" class="page active">
+        <div class="hero-grid">
+          <article class="metric primary"><span>Vetores ativos</span><strong id="vector-count">—</strong><small id="ann-summary">carregando índice</small></article>
+          <article class="metric"><span>Memória do processo</span><strong id="memory">—</strong><small id="heap">heap —</small></article>
+          <article class="metric"><span>Nós prontos</span><strong id="ready-nodes">—</strong><small id="cluster-phase">cluster</small></article>
+          <article class="metric"><span>Uptime</span><strong id="uptime">—</strong><small id="goroutines">— goroutines</small></article>
+        </div>
+        <div class="split">
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">VECTOR SPACE</p><h3>Amostra do índice</h3></div><button class="link" data-goto="explorer">Explorar →</button></div><canvas id="overview-map"></canvas></article>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">SEARCH ENGINE</p><h3>Saúde do índice</h3></div><span class="pill good">Operacional</span></div><div id="engine-stats" class="stat-list"></div></article>
+        </div>
+      </section>
+
+      <section id="page-monitor" class="page">
+        <div class="monitor-toolbar">
+          <div><p class="eyebrow">LIVE TELEMETRY</p><h3>Indicadores operacionais</h3><p class="muted">Janela móvel local com atualização a cada 3 segundos.</p></div>
+          <div class="live-indicator"><i></i><span>Ao vivo</span><small id="monitor-last-sample">aguardando</small></div>
+        </div>
+        <div class="monitor-kpis">
+          <article class="monitor-kpi"><span>Search throughput</span><strong id="monitor-qps">0.00</strong><small>buscas / segundo</small></article>
+          <article class="monitor-kpi"><span>Cache hit rate</span><strong id="monitor-cache-hit">—</strong><small id="monitor-cache-volume">sem leituras</small></article>
+          <article class="monitor-kpi"><span>ANN fallback</span><strong id="monitor-ann-fallback">—</strong><small id="monitor-ann-volume">sem buscas ANN</small></article>
+          <article class="monitor-kpi"><span>Replication lag</span><strong id="monitor-replication-lag">0</strong><small>operações pendentes</small></article>
+        </div>
+        <div class="monitor-grid">
+          <article class="panel chart-panel"><div class="chart-title"><div><span>Search throughput</span><strong id="chart-qps-current">0.00 ops/s</strong></div><small>últimos 3 minutos</small></div><canvas id="monitor-qps-chart"></canvas></article>
+          <article class="panel chart-panel"><div class="chart-title"><div><span>Memória do processo</span><strong id="chart-memory-current">—</strong></div><small>heap e memória reservada</small></div><canvas id="monitor-memory-chart"></canvas></article>
+          <article class="panel chart-panel"><div class="chart-title"><div><span>Replicação</span><strong id="chart-replication-current">0 pendentes</strong></div><small>committed × applied</small></div><canvas id="monitor-replication-chart"></canvas></article>
+          <article class="panel health-panel"><div class="panel-head"><div><p class="eyebrow">RESOURCE HEALTH</p><h3>Recursos atuais</h3></div><span id="monitor-health-pill" class="pill good">Saudável</span></div><div id="monitor-resources" class="stat-list"></div></article>
+        </div>
+      </section>
+
+      <section id="page-explorer" class="page">
+        <article class="panel explorer-panel">
+          <div class="panel-head"><div><p class="eyebrow">PROJEÇÃO 2D DETERMINÍSTICA</p><h3>Mapa de similaridade</h3></div><label class="compact">Amostra <select id="sample-limit"><option>100</option><option selected>180</option><option>300</option><option>500</option></select></label></div>
+          <div class="legend"><span><i class="dot"></i> vetor</span><span><i class="line"></i> vizinho projetado</span><strong id="map-meta">—</strong></div>
+          <canvas id="vector-map"></canvas>
+          <div id="vector-detail" class="vector-detail">Passe o cursor sobre um ponto para inspecionar o ID.</div>
+        </article>
+      </section>
+
+      <section id="page-cluster" class="page">
+        <div class="cluster-layout">
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">TOPOLOGIA</p><h3>Nós do cluster</h3></div><span id="provider" class="pill">—</span></div><div id="node-visual" class="node-visual"></div></article>
+          <article class="panel action-card"><p class="eyebrow">CAPACIDADE</p><h3>Escalar cluster</h3><p class="muted">O operador cria o novo pod, integra a réplica e acompanha sua prontidão.</p><div class="scale-number"><span id="desired-nodes">—</span><small>nós desejados</small></div><button id="add-node">+ Adicionar um nó</button><button id="remove-node" class="danger">− Remover um nó</button><p id="scale-hint" class="muted small"></p></article>
+        </div>
+      </section>
+
+      <section id="page-settings" class="page">
+        <div class="settings-head"><div><p class="eyebrow">CONFIGURAÇÃO PERSISTENTE</p><h3>Parâmetros do banco</h3><p class="muted">Alterações são validadas e aplicadas no próximo reinício controlado.</p></div><button id="save-config" disabled>Salvar alterações</button></div>
+        <div id="config-groups"></div>
+      </section>
+    </main>
+  </div>
+  <dialog id="vector-matrix-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">VECTOR MATRIX</p><h3 id="matrix-title">—</h3></div>
+      <button id="close-matrix" class="icon" aria-label="Fechar matriz">×</button>
+    </div>
+    <p id="matrix-meta" class="muted"></p>
+    <div id="matrix-grid" class="matrix-grid"></div>
+  </dialog>
+  <div id="toast" role="status"></div>
+  <script src="/admin/app.js" defer></script>
+</body>
+</html>

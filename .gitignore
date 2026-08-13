@@ -1,0 +1,52 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+/lumenvec
+/server
+
+# Build artifacts
+bin/
+dist/
+build/
+tools/protoc/
+coverage
+coverage.out
+*.out
+*.test
+
+# Go workspace/cache
+.coverprofile
+
+# Runtime data
+data/
+*.log
+.tmp
+
+# Benchmark outputs
+benchmarks/results/**
+!benchmarks/results/
+!benchmarks/results/README.md
+benchmarks/baselines/**
+!benchmarks/baselines/vnext-10k-128-c4-k10/
+!benchmarks/baselines/vnext-10k-128-c4-k10/**
+!benchmarks/baselines/matrix-1m-128-c4-k10-20260725-r1/
+!benchmarks/baselines/matrix-1m-128-c4-k10-20260725-r1/**
+!benchmarks/baselines/matrix-1m-128-c4-k10-20260725-r3/
+!benchmarks/baselines/matrix-1m-128-c4-k10-20260725-r3/**
+!benchmarks/baselines/matrix-1m-128-c4-k10-20260725-r3-cost-v1/
+!benchmarks/baselines/matrix-1m-128-c4-k10-20260725-r3-cost-v1/**
+!benchmarks/baselines/lumenvec-1m-quantized-v3-capacity/
+!benchmarks/baselines/lumenvec-1m-quantized-v3-capacity/**
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Docker overrides
+docker-compose.override.yml
+
+deep-research-report.md
