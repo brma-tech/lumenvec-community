@@ -107,10 +107,22 @@ func (b *snapshotWALBackend) SaveSnapshot(vectors []index.Vector) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmp, data, b.security.FileMode); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, b.security.FileMode)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, b.snapshotPath)
+	if _, err = f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return publishDurableSnapshot(tmp, b.snapshotPath)
 }
 
 func (b *snapshotWALBackend) LoadSnapshot() (map[string][]float64, error) {
@@ -207,7 +219,15 @@ func (b *snapshotWALBackend) TruncateWAL() error {
 	if err := os.MkdirAll(filepath.Dir(b.walPath), b.security.DirMode); err != nil {
 		return err
 	}
-	if err := os.WriteFile(b.walPath, []byte{}, b.security.FileMode); err != nil {
+	f, err := os.OpenFile(b.walPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, b.security.FileMode)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	b.pendingOps = 0

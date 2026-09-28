@@ -72,6 +72,33 @@ func SquaredEuclideanDistance32SameLen(a, b []float32) float64 {
 	return sum
 }
 
+// SquaredEuclideanDistance32FastSameLen uses the ANN-compatible four-lane
+// float32 accumulation order. Callers must ensure equal lengths.
+func SquaredEuclideanDistance32FastSameLen(a, b []float32) float64 {
+	return squaredEuclideanDistance32Platform(a, b)
+}
+
+func squaredEuclideanDistance32FastGeneric(a, b []float32) float64 {
+	var distance0, distance1, distance2, distance3 float32
+	dimension := 0
+	limit := len(a) - len(a)%4
+	for ; dimension < limit; dimension += 4 {
+		delta0 := a[dimension] - b[dimension]
+		delta1 := a[dimension+1] - b[dimension+1]
+		delta2 := a[dimension+2] - b[dimension+2]
+		delta3 := a[dimension+3] - b[dimension+3]
+		distance0 += delta0 * delta0
+		distance1 += delta1 * delta1
+		distance2 += delta2 * delta2
+		distance3 += delta3 * delta3
+	}
+	for ; dimension < len(a); dimension++ {
+		delta := a[dimension] - b[dimension]
+		distance0 += delta * delta
+	}
+	return float64((distance0 + distance1) + (distance2 + distance3))
+}
+
 // SquaredEuclideanDistance32x4SameLen calculates squared Euclidean distance from four
 // float32 queries to one float32 vector. Callers must ensure all slices have the same length.
 func SquaredEuclideanDistance32x4SameLen(a0, a1, a2, a3, b []float32) (float64, float64, float64, float64) {
@@ -115,6 +142,81 @@ func SquaredEuclideanDistance32x4SameLen(a0, a1, a2, a3, b []float32) (float64, 
 	return sum0, sum1, sum2, sum3
 }
 
+// SquaredEuclideanDistance32x4FastSameLen evaluates four vectors against one
+// query while preserving the four-lane float32 accumulation order used by the
+// ANN L2 kernel. This matters during graph construction: changing rounding can
+// change edge tie-breaking and therefore the complete HNSW topology.
+func SquaredEuclideanDistance32x4FastSameLen(a0, a1, a2, a3, b []float32) (float64, float64, float64, float64) {
+	return squaredEuclideanDistance32x4Platform(a0, a1, a2, a3, b)
+}
+
+// SquaredEuclideanDistance32x4ArenaFastSameLen evaluates four vectors stored
+// in one contiguous arena. Offsets and dim are trusted by ANN callers that
+// own the arena; avoiding four temporary slice headers is material in HNSW's
+// inner edge-expansion loop.
+func SquaredEuclideanDistance32x4ArenaFastSameLen(arena []float32, offset0, offset1, offset2, offset3, dim int, b []float32) (float64, float64, float64, float64) {
+	return squaredEuclideanDistance32x4ArenaPlatform(arena, offset0, offset1, offset2, offset3, dim, b)
+}
+
+func squaredEuclideanDistance32x4Generic(a0, a1, a2, a3, b []float32) (float64, float64, float64, float64) {
+	var sum00, sum01, sum02, sum03 float32
+	var sum10, sum11, sum12, sum13 float32
+	var sum20, sum21, sum22, sum23 float32
+	var sum30, sum31, sum32, sum33 float32
+	dimension := 0
+	limit := len(b) - len(b)%4
+	for ; dimension < limit; dimension += 4 {
+		d00 := a0[dimension] - b[dimension]
+		d01 := a0[dimension+1] - b[dimension+1]
+		d02 := a0[dimension+2] - b[dimension+2]
+		d03 := a0[dimension+3] - b[dimension+3]
+		sum00 += d00 * d00
+		sum01 += d01 * d01
+		sum02 += d02 * d02
+		sum03 += d03 * d03
+
+		d10 := a1[dimension] - b[dimension]
+		d11 := a1[dimension+1] - b[dimension+1]
+		d12 := a1[dimension+2] - b[dimension+2]
+		d13 := a1[dimension+3] - b[dimension+3]
+		sum10 += d10 * d10
+		sum11 += d11 * d11
+		sum12 += d12 * d12
+		sum13 += d13 * d13
+
+		d20 := a2[dimension] - b[dimension]
+		d21 := a2[dimension+1] - b[dimension+1]
+		d22 := a2[dimension+2] - b[dimension+2]
+		d23 := a2[dimension+3] - b[dimension+3]
+		sum20 += d20 * d20
+		sum21 += d21 * d21
+		sum22 += d22 * d22
+		sum23 += d23 * d23
+
+		d30 := a3[dimension] - b[dimension]
+		d31 := a3[dimension+1] - b[dimension+1]
+		d32 := a3[dimension+2] - b[dimension+2]
+		d33 := a3[dimension+3] - b[dimension+3]
+		sum30 += d30 * d30
+		sum31 += d31 * d31
+		sum32 += d32 * d32
+		sum33 += d33 * d33
+	}
+	for ; dimension < len(b); dimension++ {
+		d0 := a0[dimension] - b[dimension]
+		d1 := a1[dimension] - b[dimension]
+		d2 := a2[dimension] - b[dimension]
+		d3 := a3[dimension] - b[dimension]
+		sum00 += d0 * d0
+		sum10 += d1 * d1
+		sum20 += d2 * d2
+		sum30 += d3 * d3
+	}
+	return float64((sum00 + sum01) + (sum02 + sum03)),
+		float64((sum10 + sum11) + (sum12 + sum13)),
+		float64((sum20 + sum21) + (sum22 + sum23)),
+		float64((sum30 + sum31) + (sum32 + sum33))
+}
 
 // SquaredEuclideanDistance64To32 compares an external float64 query with an internal float32 vector.
 func SquaredEuclideanDistance64To32(a []float64, b []float32) float64 {

@@ -357,7 +357,7 @@ var defaultServerOptions = ServerOptions{
 	MetricsEnabled:               true,
 	RateLimitRPS:                 100,
 	SearchMode:                   "exact",
-	ANNBackend:                   "hnsw",
+		ANNBackend:                   "hierarchical-hnsw",
 	IVFCentroids:                 64,
 	IVFNProbe:                    4,
 	ANNProfile:                   "balanced",
@@ -424,6 +424,7 @@ func NewServerWithOptions(opts ServerOptions) *Server {
 		WALPath:       opts.WALPath,
 		SnapshotEvery: opts.SnapshotEvery,
 		SearchMode:    opts.SearchMode,
+		ANNBackend:    opts.ANNBackend,
 		ANNBuilder:    annBuilder(opts.ANNBackend, opts.IVFCentroids, opts.IVFNProbe),
 		ANNProfile:    opts.ANNProfile,
 		ANNOptions: ann.Options{
@@ -1311,11 +1312,11 @@ func (s *Server) SearchVectorsHandler(w http.ResponseWriter, r *http.Request) {
 		if structuredSearch, ok := s.service.(interface {
 			SearchStructured([]float64, int, core.StructuredFilter, core.DistanceMetric) ([]core.SearchResult, error)
 		}); ok {
-			results, err = structuredSearch.SearchStructured(req.Values, req.K, structured, metric)
+			results, err = core.SearchStructuredWithContext(r.Context(), structuredSearch, req.Values, req.K, structured, metric)
 		} else if filtered, ok := s.service.(interface {
 			SearchFilteredMetric([]float64, int, core.VectorFilter, core.DistanceMetric) ([]core.SearchResult, error)
 		}); ok {
-			results, err = filtered.SearchFilteredMetric(req.Values, req.K, func(v index.Vector) bool {
+			results, err = core.SearchFilteredMetricWithContext(r.Context(), filtered, req.Values, req.K, func(v index.Vector) bool {
 				if len(allowed) > 0 {
 					if _, ok := allowed[v.ID]; !ok {
 						return false
@@ -1328,11 +1329,11 @@ func (s *Server) SearchVectorsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if metric == core.MetricL2 {
-		results, err = s.service.Search(req.Values, req.K)
+		results, err = core.SearchWithContext(r.Context(), s.service, req.Values, req.K)
 	} else if metricSearch, ok := s.service.(interface {
 		SearchFilteredMetric([]float64, int, core.VectorFilter, core.DistanceMetric) ([]core.SearchResult, error)
 	}); ok {
-		results, err = metricSearch.SearchFilteredMetric(req.Values, req.K, nil, metric)
+		results, err = core.SearchFilteredMetricWithContext(r.Context(), metricSearch, req.Values, req.K, nil, metric)
 	} else {
 		http.Error(w, "metric search is not supported", http.StatusNotImplemented)
 		return
@@ -1354,7 +1355,7 @@ func (s *Server) SearchVectorsBatchHandler(w http.ResponseWriter, r *http.Reques
 	for _, query := range req.Queries {
 		queries = append(queries, core.BatchSearchQuery{ID: query.ID, Values: query.Values, K: query.K})
 	}
-	results, err := s.service.SearchBatch(queries)
+	results, err := core.SearchBatchWithContext(r.Context(), s.service, queries)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

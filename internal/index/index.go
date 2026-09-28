@@ -104,6 +104,17 @@ func (i *Index) SearchVector(id string) (Vector, error) {
 	return Vector{ID: vec.id, Values: vector.ToFloat64(vec.values)}, nil
 }
 
+// CopyVector32 copies directly into caller-owned reusable storage.
+func (i *Index) CopyVector32(id string, dst []float32) ([]float32, error) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	vec, exists := i.vectors[id]
+	if !exists {
+		return nil, ErrVectorNotFound
+	}
+	return append(dst[:0], vec.values...), nil
+}
+
 // DeleteVector removes a vector from the index by its ID.
 func (i *Index) DeleteVector(id string) error {
 	i.mu.Lock()

@@ -19,14 +19,14 @@ LumenVec is a small vector database written in Go. It provides HTTP or gRPC APIs
 
 ## Requirements
 
-- Go `1.24+`
+- Go `1.26+` (release binaries built with the installed Go toolchain)
 - Docker and Docker Compose for container workflows
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/brunomarques007/lumenvec.git
-cd lumenvec
+git clone https://github.com/brma-tech/lumenvec-community.git
+cd lumenvec-community
 go mod tidy
 go run ./cmd/server
 ```

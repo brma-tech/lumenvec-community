@@ -8,6 +8,23 @@ import (
 	"lumenvec/internal/vector"
 )
 
+func TestSearchWorkStats(t *testing.T) {
+	idx := NewAnnIndexWithOptions(Options{M: 8, EfConstruction: 16, EfSearch: 32})
+	t.Cleanup(func() { _ = idx.Close() })
+	for id := 0; id < 32; id++ {
+		if err := idx.AddVector(id, []float64{float64(id), 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := idx.SearchWithDistances([]float64{10, 1}, 5); err != nil {
+		t.Fatal(err)
+	}
+	stats := idx.SearchWorkStats()
+	if stats.Queries != 1 || stats.Visited == 0 || stats.DistanceCalls == 0 || stats.MaxFrontier == 0 {
+		t.Fatalf("unexpected search work stats: %+v", stats)
+	}
+}
+
 func TestAnnIndexBasicSearch(t *testing.T) {
 	idx := NewAnnIndexWithOptions(Options{
 		M:              8,

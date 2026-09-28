@@ -2,14 +2,12 @@ FROM golang:1.26@sha256:3aff6657219a4d9c14e27fb1d8976c49c29fddb70ba835014f477e1c
 
 WORKDIR /src
 
-COPY go.community.mod ./go.mod
-COPY go.community.sum ./go.sum
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -mod=readonly \
-    -modfile=go.community.mod \
     -trimpath \
     -o /out/lumenvec \
     ./cmd/server && \
@@ -25,16 +23,13 @@ WORKDIR /app
 
 COPY --from=builder --chown=nonroot:nonroot /out/lumenvec /app/lumenvec
 COPY --from=builder --chown=nonroot:nonroot /out/data /data
-COPY --chown=nonroot:nonroot configs/config.yaml /app/configs/config.yaml
-COPY --chown=nonroot:nonroot configs/config.grpc.yaml /app/configs/config.grpc.yaml
 
 EXPOSE 19190
 EXPOSE 19191
 
 VOLUME ["/data"]
 
-ENV VECTOR_DB_CONFIG=/app/configs/config.yaml \
-    VECTOR_DB_PROTOCOL=http \
+ENV VECTOR_DB_PROTOCOL=http \
     VECTOR_DB_PORT=19190 \
     VECTOR_DB_GRPC_PORT=19191 \
     VECTOR_DB_SNAPSHOT_PATH=/data/snapshot.json \

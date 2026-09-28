@@ -94,7 +94,7 @@ func (s *Service) finishANNCheckpoint(checkpointErr error) error {
 }
 
 func (s *Service) saveANNCheckpointWithFingerprint(fingerprint string) error {
-	if !s.annSegmented {
+	if !s.annSegmented || s.annBackend == "hierarchical-hnsw" {
 		return nil
 	}
 	path := s.annCheckpointPath()
@@ -240,7 +240,7 @@ func (s *Service) loadANNCheckpoint(vectors []index.Vector) bool {
 // loadANNCheckpointFromStore validates the v2 checkpoint against the native
 // float32 store without materializing a second full vector collection.
 func (s *Service) loadANNCheckpointFromStore() bool {
-	if !s.annSegmented {
+	if !s.annSegmented || s.annBackend == "hierarchical-hnsw" {
 		return false
 	}
 	vectorsReader, streamingOK := s.vectorStore.(rangeVectorByID32Reader)

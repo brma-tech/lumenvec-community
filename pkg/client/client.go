@@ -129,7 +129,8 @@ func (vc *VectorClient) AddVectors(vectors []VectorPayload) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("failed to add vectors: %s", resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("failed to add vectors: %s: %s", resp.Status, string(body))
 	}
 	return nil
 }

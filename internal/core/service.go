@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -52,28 +53,30 @@ type BatchSearchResult struct {
 }
 
 type ServiceOptions struct {
-	MaxVectorDim            int
-	MaxK                    int
-	SnapshotPath            string
-	WALPath                 string
-	SnapshotEvery           int
-	SearchMode              string
-	ANNProfile              string
-	ANNOptions              ann.Options
-	ANNSegmentMaxNodes      int
-	ANNStagedIngestMinBatch int
-	ANNEvalSampleRate       int
-	ANNAdaptive             bool
-	ANNMinCandidates        int
-	ANNMaxProbe             int
-	VectorStore             string
-	VectorPath              string
-	LocationIndexCapacity   uint64
-	IDIndexCapacity         uint64
-	Cache                   CacheOptions
-	StorageSecurity         StorageSecurityOptions
-	SyncEvery               int
-	WALReplicator           WALReplicator
+	ANNRebuildSnapshotBudgetBytes uint64
+	MaxVectorDim                  int
+	MaxK                          int
+	SnapshotPath                  string
+	WALPath                       string
+	SnapshotEvery                 int
+	SearchMode                    string
+	ANNBackend                    string
+	ANNProfile                    string
+	ANNOptions                    ann.Options
+	ANNSegmentMaxNodes            int
+	ANNStagedIngestMinBatch       int
+	ANNEvalSampleRate             int
+	ANNAdaptive                   bool
+	ANNMinCandidates              int
+	ANNMaxProbe                   int
+	VectorStore                   string
+	VectorPath                    string
+	LocationIndexCapacity         uint64
+	IDIndexCapacity               uint64
+	Cache                         CacheOptions
+	StorageSecurity               StorageSecurityOptions
+	SyncEvery                     int
+	WALReplicator                 WALReplicator
 	// ANNBuilder optionally constructs an ANN index from the current vectors.
 	// Returning an error keeps the compatibility fallback (HNSW) active.
 	ANNBuilder func([]index.Vector) (ANNIndex, error)
@@ -122,52 +125,57 @@ type ServiceDeps struct {
 }
 
 type Service struct {
-	metadataMu              sync.RWMutex
-	metadata                map[string]map[string]string
-	textIndex               fullTextIndex
-	textIndexOnce           sync.Once
-	textIndexReady          atomic.Bool
-	index                   VectorIndex
-	annIndex                ANNIndex
-	annMu                   sync.RWMutex
-	metricANNMu             sync.RWMutex
-	metricANN               map[DistanceMetric]ANNIndex
-	maxVectorDim            int
-	maxK                    int
-	snapshotPath            string
-	walPath                 string
-	snapshotEvery           int
-	searchMode              string
-	annProfile              string
-	annOptions              ann.Options
-	annSegmented            bool
-	annSegmentMaxNodes      int
-	annStagedIngestMinBatch int
-	annEvalSampleRate       int
-	annAdaptive             bool
-	annMinCandidates        int
-	annMaxProbe             int
-	annBuilder              func([]index.Vector) (ANNIndex, error)
-	annBuilderActive        bool
-	persistOps              int
-	persistMu               sync.Mutex
-	syncEvery               int
-	vectorStore             VectorStore
-	vectorPath              string
-	storageSecurity         StorageSecurityOptions
-	idResolver              IDResolver
-	persistence             PersistenceBackend
-	annResultPool           sync.Pool
-	query32Pool             sync.Pool
-	batchQuery32Pool        sync.Pool
-	batchQuery64Pool        sync.Pool
-	batchPreparedPool       sync.Pool
-	stats                   serviceStats
-	closeMu                 sync.Mutex
-	closed                  bool
-	closeErr                error
-	annCheckpointLoaded     atomic.Bool
-	annCheckpointDirty      atomic.Bool
+	annRebuildSnapshotBudgetBytes uint64
+	annRebuildFailures            atomic.Uint64
+	annRebuildSuccesses           atomic.Uint64
+	annRebuildLastError           atomic.Pointer[string]
+	metadataMu                    sync.RWMutex
+	metadata                      map[string]map[string]string
+	textIndex                     fullTextIndex
+	textIndexInitMu               sync.Mutex
+	textIndexReady                atomic.Bool
+	index                         VectorIndex
+	annIndex                      ANNIndex
+	annMu                         sync.RWMutex
+	metricANNMu                   sync.RWMutex
+	metricANN                     map[DistanceMetric]ANNIndex
+	maxVectorDim                  int
+	maxK                          int
+	snapshotPath                  string
+	walPath                       string
+	snapshotEvery                 int
+	searchMode                    string
+	annProfile                    string
+	annBackend                    string
+	annOptions                    ann.Options
+	annSegmented                  bool
+	annSegmentMaxNodes            int
+	annStagedIngestMinBatch       int
+	annEvalSampleRate             int
+	annAdaptive                   bool
+	annMinCandidates              int
+	annMaxProbe                   int
+	annBuilder                    func([]index.Vector) (ANNIndex, error)
+	annBuilderActive              bool
+	persistOps                    int
+	persistMu                     sync.Mutex
+	syncEvery                     int
+	vectorStore                   VectorStore
+	vectorPath                    string
+	storageSecurity               StorageSecurityOptions
+	idResolver                    IDResolver
+	persistence                   PersistenceBackend
+	annResultPool                 sync.Pool
+	query32Pool                   sync.Pool
+	batchQuery32Pool              sync.Pool
+	batchQuery64Pool              sync.Pool
+	batchPreparedPool             sync.Pool
+	stats                         serviceStats
+	closeMu                       sync.Mutex
+	closed                        bool
+	closeErr                      error
+	annCheckpointLoaded           atomic.Bool
+	annCheckpointDirty            atomic.Bool
 }
 
 func (s *Service) assignID(id string) (int, error) {
@@ -296,53 +304,79 @@ func (s *Service) ReserveIDMappings(ids []string) ([]IDMappingEntry, error) {
 }
 
 type ServiceStats struct {
-	ShardCount               int    `json:"shard_count"`
-	ReplicationCommitted     uint64 `json:"replication_committed_offset"`
-	ReplicationApplied       uint64 `json:"replication_applied_offset"`
-	ReplicationPending       uint64 `json:"replication_pending"`
-	ReplicationFailures      uint64 `json:"replication_failures_total"`
-	ReplicationTerm          uint64 `json:"replication_term"`
-	ReplicationFailovers     uint64 `json:"replication_failovers"`
-	SearchRequestsTotal      uint64 `json:"search_requests_total"`
-	ExactSearchesTotal       uint64 `json:"exact_searches_total"`
-	ANNSearchesTotal         uint64 `json:"ann_searches_total"`
-	ANNSearchHitsTotal       uint64 `json:"ann_search_hits_total"`
-	ANNSearchFallbacks       uint64 `json:"ann_search_fallbacks_total"`
-	ANNSearchErrorsTotal     uint64 `json:"ann_search_errors_total"`
-	ANNCandidatesReturned    uint64 `json:"ann_candidates_returned_total"`
-	ANNEvalSamplesTotal      uint64 `json:"ann_eval_samples_total"`
-	ANNEvalTop1Matches       uint64 `json:"ann_eval_top1_matches_total"`
-	ANNEvalOverlapResults    uint64 `json:"ann_eval_overlap_results_total"`
-	ANNEvalComparedResults   uint64 `json:"ann_eval_compared_results_total"`
-	ANNNodes                 int    `json:"ann_nodes"`
-	ANNDeleted               int    `json:"ann_deleted"`
-	ANNVectorBytes           uint64 `json:"ann_vector_bytes"`
-	ANNAdjacencyBytes        uint64 `json:"ann_adjacency_bytes"`
-	ANNMapBytes              uint64 `json:"ann_map_bytes"`
-	ANNRouteBytes            uint64 `json:"ann_route_bytes"`
-	ANNStructuralBytes       uint64 `json:"ann_structural_bytes"`
-	ANNMetricIndexes         int    `json:"ann_metric_indexes"`
-	ANNMetricNodes           int    `json:"ann_metric_nodes"`
-	ANNMetricStructuralBytes uint64 `json:"ann_metric_structural_bytes"`
-	ANNSegments              int    `json:"ann_segments"`
-	ANNCheckpointLoaded      bool   `json:"ann_checkpoint_loaded"`
-	CacheHitsTotal           uint64 `json:"cache_hits_total"`
-	CacheMissesTotal         uint64 `json:"cache_misses_total"`
-	CacheEvictionsTotal      uint64 `json:"cache_evictions_total"`
-	CacheItems               uint64 `json:"cache_items"`
-	CacheBytes               uint64 `json:"cache_bytes"`
-	DiskFileBytes            uint64 `json:"disk_file_bytes"`
-	DiskRecords              uint64 `json:"disk_records"`
-	DiskStaleRecords         uint64 `json:"disk_stale_records"`
-	DiskCompactionsTotal     uint64 `json:"disk_compactions_total"`
-	DiskCompactionActive     bool   `json:"disk_compaction_active"`
-	DiskSegments             uint64 `json:"disk_segments"`
-	ANNProfile               string `json:"ann_profile"`
-	ANNM                     int    `json:"ann_m"`
-	ANNEfConstruction        int    `json:"ann_ef_construction"`
-	ANNEfSearch              int    `json:"ann_ef_search"`
-	ANNSegmentRouting        bool   `json:"ann_segment_routing"`
-	ANNDiversifiedPruning    bool   `json:"ann_diversified_pruning"`
+	ANNRebuildFailures          uint64 `json:"ann_rebuild_failures"`
+	ANNRebuildSuccesses         uint64 `json:"ann_rebuild_successes"`
+	ANNRebuildLastError         string `json:"ann_rebuild_last_error,omitempty"`
+	ShardCount                  int    `json:"shard_count"`
+	ReplicationCommitted        uint64 `json:"replication_committed_offset"`
+	ReplicationApplied          uint64 `json:"replication_applied_offset"`
+	ReplicationPending          uint64 `json:"replication_pending"`
+	ReplicationFailures         uint64 `json:"replication_failures_total"`
+	ReplicationTerm             uint64 `json:"replication_term"`
+	ReplicationFailovers        uint64 `json:"replication_failovers"`
+	SearchRequestsTotal         uint64 `json:"search_requests_total"`
+	ExactSearchesTotal          uint64 `json:"exact_searches_total"`
+	ANNSearchesTotal            uint64 `json:"ann_searches_total"`
+	ANNSearchHitsTotal          uint64 `json:"ann_search_hits_total"`
+	ANNSearchFallbacks          uint64 `json:"ann_search_fallbacks_total"`
+	ANNSearchErrorsTotal        uint64 `json:"ann_search_errors_total"`
+	ANNCandidatesReturned       uint64 `json:"ann_candidates_returned_total"`
+	ANNEvalSamplesTotal         uint64 `json:"ann_eval_samples_total"`
+	ANNEvalTop1Matches          uint64 `json:"ann_eval_top1_matches_total"`
+	ANNEvalOverlapResults       uint64 `json:"ann_eval_overlap_results_total"`
+	ANNEvalComparedResults      uint64 `json:"ann_eval_compared_results_total"`
+	ANNNodes                    int    `json:"ann_nodes"`
+	ANNDeleted                  int    `json:"ann_deleted"`
+	ANNVectorBytes              uint64 `json:"ann_vector_bytes"`
+	ANNAdjacencyBytes           uint64 `json:"ann_adjacency_bytes"`
+	ANNMapBytes                 uint64 `json:"ann_map_bytes"`
+	ANNRouteBytes               uint64 `json:"ann_route_bytes"`
+	ANNStructuralBytes          uint64 `json:"ann_structural_bytes"`
+	ANNMetricIndexes            int    `json:"ann_metric_indexes"`
+	ANNMetricNodes              int    `json:"ann_metric_nodes"`
+	ANNMetricStructuralBytes    uint64 `json:"ann_metric_structural_bytes"`
+	ANNSegments                 int    `json:"ann_segments"`
+	ANNCompactionPending        int    `json:"ann_compaction_pending"`
+	ANNCompacting               int    `json:"ann_compacting"`
+	ANNCompactionCompactable    int    `json:"ann_compaction_compactable"`
+	ANNReaders                  int    `json:"ann_readers"`
+	ANNRetiredSegments          int    `json:"ann_retired_segments"`
+	ANNReclaimedSegments        uint64 `json:"ann_reclaimed_segments_total"`
+	ANNReclaimErrors            uint64 `json:"ann_reclaim_errors_total"`
+	ANNCompactionMemoryBudget   uint64 `json:"ann_compaction_memory_budget_bytes"`
+	ANNCompactionMemoryReserved uint64 `json:"ann_compaction_memory_reserved_bytes"`
+	ANNCompactionMemoryEstimate uint64 `json:"ann_compaction_memory_estimate_bytes"`
+	ANNCompactionMemoryDeferred uint64 `json:"ann_compaction_memory_deferred_total"`
+	ANNPrimaryBuildActive       bool   `json:"ann_primary_build_active"`
+	ANNPrimaryBuildTotal        uint64 `json:"ann_primary_build_vectors_total"`
+	ANNPrimaryBuildDone         uint64 `json:"ann_primary_build_vectors_done"`
+	ANNPrimaryBuildDurationMs   uint64 `json:"ann_primary_build_duration_ms"`
+	ANNPrimaryBuildFailures     uint64 `json:"ann_primary_build_failures_total"`
+	ANNSearchBudgetQueries      uint64 `json:"ann_search_budget_queries_total"`
+	ANNSearchBudgetSegments     uint64 `json:"ann_search_budget_segments_total"`
+	ANNSearchEFBudget           uint64 `json:"ann_search_ef_budget_total"`
+	ANNCheckpointLoaded         bool   `json:"ann_checkpoint_loaded"`
+	CacheHitsTotal              uint64 `json:"cache_hits_total"`
+	CacheMissesTotal            uint64 `json:"cache_misses_total"`
+	CacheEvictionsTotal         uint64 `json:"cache_evictions_total"`
+	CacheItems                  uint64 `json:"cache_items"`
+	CacheBytes                  uint64 `json:"cache_bytes"`
+	DiskFileBytes               uint64 `json:"disk_file_bytes"`
+	DiskRecords                 uint64 `json:"disk_records"`
+	DiskStaleRecords            uint64 `json:"disk_stale_records"`
+	DiskCompactionsTotal        uint64 `json:"disk_compactions_total"`
+	DiskCompactionActive        bool   `json:"disk_compaction_active"`
+	DiskSegments                uint64 `json:"disk_segments"`
+	ANNProfile                  string `json:"ann_profile"`
+	ANNM                        int    `json:"ann_m"`
+	ANNEfConstruction           int    `json:"ann_ef_construction"`
+	ANNEfSearch                 int    `json:"ann_ef_search"`
+	ANNSearchExecution          string `json:"ann_search_execution"`
+	ANNEFBudgetMode             string `json:"ann_ef_budget_mode"`
+	ANNEFGlobalPercent          int    `json:"ann_ef_global_percent"`
+	ANNPrimaryIndexEnabled      bool   `json:"ann_primary_index_enabled"`
+	ANNSegmentRouting           bool   `json:"ann_segment_routing"`
+	ANNDiversifiedPruning       bool   `json:"ann_diversified_pruning"`
 }
 
 type serviceStats struct {
@@ -393,6 +427,7 @@ func NewService(opts ServiceOptions) *Service {
 func NewServiceWithDeps(opts ServiceOptions, deps ServiceDeps) *Service {
 	serviceStarted := time.Now()
 	opts.ANNOptions = applyANNProfile(opts.ANNProfile, opts.ANNOptions)
+	annBackend := normalizeANNBackend(opts.ANNBackend)
 	annSegmented := strings.EqualFold(strings.TrimSpace(opts.VectorStore), "segment") || strings.EqualFold(strings.TrimSpace(opts.VectorStore), "segmented")
 	if annSegmented && strings.TrimSpace(opts.VectorPath) == "" {
 		opts.VectorPath = "./data/vectors"
@@ -419,11 +454,7 @@ func NewServiceWithDeps(opts ServiceOptions, deps ServiceDeps) *Service {
 		}
 	}
 	if deps.ANNIndex == nil {
-		if annSegmented {
-			deps.ANNIndex = ann.NewSegmentedIndex(opts.ANNOptions, opts.ANNSegmentMaxNodes)
-		} else {
-			deps.ANNIndex = ann.NewAnnIndexWithOptions(opts.ANNOptions)
-		}
+		deps.ANNIndex = newConfiguredANNIndex(annBackend, opts.ANNOptions, annSegmented, opts.ANNSegmentMaxNodes, 0)
 	}
 	if deps.IDResolver == nil {
 		if opts.IDIndexCapacity > 0 {
@@ -448,31 +479,33 @@ func NewServiceWithDeps(opts ServiceOptions, deps ServiceDeps) *Service {
 	}
 
 	svc := &Service{
-		index:                   deps.Index,
-		annIndex:                deps.ANNIndex,
-		maxVectorDim:            opts.MaxVectorDim,
-		maxK:                    opts.MaxK,
-		snapshotPath:            opts.SnapshotPath,
-		walPath:                 opts.WALPath,
-		snapshotEvery:           opts.SnapshotEvery,
-		searchMode:              normalizeSearchMode(opts.SearchMode),
-		annProfile:              normalizeANNProfile(opts.ANNProfile),
-		annOptions:              opts.ANNOptions,
-		annSegmented:            annSegmented,
-		annSegmentMaxNodes:      opts.ANNSegmentMaxNodes,
-		annStagedIngestMinBatch: opts.ANNStagedIngestMinBatch,
-		annEvalSampleRate:       clampPercent(opts.ANNEvalSampleRate),
-		annAdaptive:             opts.ANNAdaptive,
-		annMinCandidates:        opts.ANNMinCandidates,
-		annMaxProbe:             opts.ANNMaxProbe,
-		annBuilder:              opts.ANNBuilder,
-		annBuilderActive:        annBuilderActive,
-		syncEvery:               normalizeSyncEvery(opts.SyncEvery),
-		vectorStore:             deps.VectorStore,
-		vectorPath:              opts.VectorPath,
-		storageSecurity:         normalizeStorageSecurityOptions(opts.StorageSecurity),
-		idResolver:              deps.IDResolver,
-		persistence:             deps.Persistence,
+		annRebuildSnapshotBudgetBytes: opts.ANNRebuildSnapshotBudgetBytes,
+		index:                         deps.Index,
+		annIndex:                      deps.ANNIndex,
+		maxVectorDim:                  opts.MaxVectorDim,
+		maxK:                          opts.MaxK,
+		snapshotPath:                  opts.SnapshotPath,
+		walPath:                       opts.WALPath,
+		snapshotEvery:                 opts.SnapshotEvery,
+		searchMode:                    normalizeSearchMode(opts.SearchMode),
+		annProfile:                    normalizeANNProfile(opts.ANNProfile),
+		annBackend:                    annBackend,
+		annOptions:                    opts.ANNOptions,
+		annSegmented:                  annSegmented,
+		annSegmentMaxNodes:            opts.ANNSegmentMaxNodes,
+		annStagedIngestMinBatch:       opts.ANNStagedIngestMinBatch,
+		annEvalSampleRate:             clampPercent(opts.ANNEvalSampleRate),
+		annAdaptive:                   opts.ANNAdaptive,
+		annMinCandidates:              opts.ANNMinCandidates,
+		annMaxProbe:                   opts.ANNMaxProbe,
+		annBuilder:                    opts.ANNBuilder,
+		annBuilderActive:              annBuilderActive,
+		syncEvery:                     normalizeSyncEvery(opts.SyncEvery),
+		vectorStore:                   deps.VectorStore,
+		vectorPath:                    opts.VectorPath,
+		storageSecurity:               normalizeStorageSecurityOptions(opts.StorageSecurity),
+		idResolver:                    deps.IDResolver,
+		persistence:                   deps.Persistence,
 	}
 	svc.annResultPool.New = func() any {
 		capHint := 64
@@ -1061,6 +1094,13 @@ func (s *Service) DeleteVector(id string) error {
 }
 
 func (s *Service) Search(values []float64, k int) ([]SearchResult, error) {
+	return s.SearchContext(context.Background(), values, k)
+}
+
+func (s *Service) SearchContext(ctx context.Context, values []float64, k int) ([]SearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.ensureRuntimeDeps()
 	if err := s.validateSearchRequest(values, k); err != nil {
 		return nil, err
@@ -1068,7 +1108,7 @@ func (s *Service) Search(values []float64, k int) ([]SearchResult, error) {
 	s.stats.searchRequestsTotal.Add(1)
 
 	if s.searchMode == "ann" {
-		results, ok, err := s.searchANN(values, k)
+		results, ok, err := s.searchANNContext(ctx, values, k)
 		if err != nil {
 			return nil, err
 		}
@@ -1079,10 +1119,17 @@ func (s *Service) Search(values []float64, k int) ([]SearchResult, error) {
 		s.stats.annSearchFallbacks.Add(1)
 	}
 	s.stats.exactSearchesTotal.Add(1)
-	return s.searchExact(values, k), nil
+	return s.searchExactContext(ctx, values, k)
 }
 
 func (s *Service) SearchBatch(queries []BatchSearchQuery) ([]BatchSearchResult, error) {
+	return s.SearchBatchContext(context.Background(), queries)
+}
+
+func (s *Service) SearchBatchContext(ctx context.Context, queries []BatchSearchQuery) ([]BatchSearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.ensureRuntimeDeps()
 	if len(queries) == 0 {
 		return nil, ErrInvalidValues
@@ -1163,7 +1210,7 @@ func (s *Service) SearchBatch(queries []BatchSearchQuery) ([]BatchSearchResult, 
 	}
 
 	if s.searchMode == "ann" {
-		results, err := s.searchBatchANN(prepared)
+		results, err := s.searchBatchANNContext(ctx, prepared)
 		for i, query := range queries {
 			if len(query.Values) == 0 && len(prepared[i].vals) > 0 {
 				s.putBatchQuery64Buffer(&prepared[i].vals)
@@ -1172,15 +1219,19 @@ func (s *Service) SearchBatch(queries []BatchSearchQuery) ([]BatchSearchResult, 
 		return results, err
 	}
 	if len(prepared) >= exactBatchDistanceWidth*2 && runtime.GOMAXPROCS(0) > 1 {
-		return s.searchBatchExactParallel(prepared), nil
+		return s.searchBatchExactParallelContext(ctx, prepared), ctx.Err()
 	}
-	return s.searchBatchExactSerial(prepared), nil
+	return s.searchBatchExactSerialContext(ctx, prepared), ctx.Err()
 }
 
 func (s *Service) searchBatchExactParallel(prepared []preparedBatchQuery) []BatchSearchResult {
+	return s.searchBatchExactParallelContext(context.Background(), prepared)
+}
+
+func (s *Service) searchBatchExactParallelContext(ctx context.Context, prepared []preparedBatchQuery) []BatchSearchResult {
 	workers := min(runtime.GOMAXPROCS(0), len(prepared)/exactBatchDistanceWidth)
 	if workers <= 1 {
-		return s.searchBatchExactSerial(prepared)
+		return s.searchBatchExactSerialContext(ctx, prepared)
 	}
 	chunkSize := (len(prepared) + workers - 1) / workers
 	if rem := chunkSize % exactBatchDistanceWidth; rem != 0 {
@@ -1193,7 +1244,7 @@ func (s *Service) searchBatchExactParallel(prepared []preparedBatchQuery) []Batc
 		wg.Add(1)
 		go func(batch []preparedBatchQuery) {
 			defer wg.Done()
-			s.scanExactBatch(batch)
+			s.scanExactBatchContext(ctx, batch)
 		}(prepared[start:end])
 	}
 	wg.Wait()
@@ -1201,12 +1252,23 @@ func (s *Service) searchBatchExactParallel(prepared []preparedBatchQuery) []Batc
 }
 
 func (s *Service) searchBatchExactSerial(prepared []preparedBatchQuery) []BatchSearchResult {
-	s.scanExactBatch(prepared)
+	return s.searchBatchExactSerialContext(context.Background(), prepared)
+}
+
+func (s *Service) searchBatchExactSerialContext(ctx context.Context, prepared []preparedBatchQuery) []BatchSearchResult {
+	s.scanExactBatchContext(ctx, prepared)
 	return batchResultsFromPrepared(prepared)
 }
 
 func (s *Service) scanExactBatch(prepared []preparedBatchQuery) {
+	s.scanExactBatchContext(context.Background(), prepared)
+}
+
+func (s *Service) scanExactBatchContext(ctx context.Context, prepared []preparedBatchQuery) {
 	s.rangeExactVectors(func(id string, values []float32) bool {
+		if ctx.Err() != nil {
+			return false
+		}
 		for i := 0; i+exactBatchDistanceWidth <= len(prepared); i += exactBatchDistanceWidth {
 			q0 := prepared[i].vals32
 			q1 := prepared[i+1].vals32
@@ -1251,11 +1313,15 @@ func batchResultsFromPrepared(prepared []preparedBatchQuery) []BatchSearchResult
 }
 
 func (s *Service) searchBatchANN(prepared []preparedBatchQuery) ([]BatchSearchResult, error) {
+	return s.searchBatchANNContext(context.Background(), prepared)
+}
+
+func (s *Service) searchBatchANNContext(ctx context.Context, prepared []preparedBatchQuery) ([]BatchSearchResult, error) {
 	results := make([]BatchSearchResult, len(prepared))
 	workers := min(len(prepared), batchSearchWorkerLimit())
 	if workers <= 1 {
 		for i, query := range prepared {
-			hits, err := s.Search(query.vals, query.acc.limit)
+			hits, err := s.SearchContext(ctx, query.vals, query.acc.limit)
 			if err != nil {
 				return nil, err
 			}
@@ -1274,7 +1340,7 @@ func (s *Service) searchBatchANN(prepared []preparedBatchQuery) ([]BatchSearchRe
 			defer wg.Done()
 			for i := range jobs {
 				query := prepared[i]
-				hits, err := s.Search(query.vals, query.acc.limit)
+				hits, err := s.SearchContext(ctx, query.vals, query.acc.limit)
 				if err != nil {
 					errOnce.Do(func() { firstErr = err })
 					continue
@@ -1318,11 +1384,19 @@ func (s *Service) validateSearchRequest(values []float64, k int) error {
 }
 
 func (s *Service) searchExact(values []float64, k int) []SearchResult {
+	results, _ := s.searchExactContext(context.Background(), values, k)
+	return results
+}
+
+func (s *Service) searchExactContext(ctx context.Context, values []float64, k int) ([]SearchResult, error) {
 	query32 := s.getQuery32Buffer(values)
 	defer s.putQuery32Buffer(query32)
 
 	acc := newTopKAccumulator(k)
 	s.rangeExactVectors(func(id string, vecValues []float32) bool {
+		if ctx.Err() != nil {
+			return false
+		}
 		if len(vecValues) != len(*query32) {
 			return true
 		}
@@ -1332,7 +1406,7 @@ func (s *Service) searchExact(values []float64, k int) []SearchResult {
 		}
 		return true
 	})
-	return acc.Results()
+	return acc.Results(), ctx.Err()
 }
 
 func (s *Service) rangeExactVectors(fn func(id string, values []float32) bool) {
@@ -1353,6 +1427,10 @@ func (s *Service) rangeExactVectors(fn func(id string, values []float32) bool) {
 }
 
 func (s *Service) searchANN(values []float64, k int) ([]SearchResult, bool, error) {
+	return s.searchANNContext(context.Background(), values, k)
+}
+
+func (s *Service) searchANNContext(ctx context.Context, values []float64, k int) ([]SearchResult, bool, error) {
 	s.stats.annSearchesTotal.Add(1)
 	annIndex := s.currentANNIndex()
 	candidateBuf := s.getANNResultBuffer()
@@ -1382,11 +1460,23 @@ func (s *Service) searchANN(values []float64, k int) ([]SearchResult, bool, erro
 	}
 	var candidates []ann.Result
 	var err error
-	if s.annAdaptive {
+	if contextual, ok := annIndex.(interface {
+		SearchWithDistancesContext(context.Context, []float64, int, []ann.Result) ([]ann.Result, error)
+	}); ok && !s.annAdaptive {
+		candidates, err = contextual.SearchWithDistancesContext(ctx, values, candidateLimit, *candidateBuf)
+	} else if s.annAdaptive {
 		if adaptive, ok := annIndex.(interface {
+			SearchAdaptiveWithDistancesContext(context.Context, []float64, int, int, int, []ann.Result) ([]ann.Result, error)
+		}); ok {
+			candidates, err = adaptive.SearchAdaptiveWithDistancesContext(ctx, values, candidateLimit, s.annMinCandidates, s.annMaxProbe, *candidateBuf)
+		} else if adaptive, ok := annIndex.(interface {
 			SearchAdaptiveWithDistancesInto([]float64, int, int, int, []ann.Result) ([]ann.Result, error)
 		}); ok {
 			candidates, err = adaptive.SearchAdaptiveWithDistancesInto(values, candidateLimit, s.annMinCandidates, s.annMaxProbe, *candidateBuf)
+		} else if contextual, ok := annIndex.(interface {
+			SearchWithDistancesContext(context.Context, []float64, int, []ann.Result) ([]ann.Result, error)
+		}); ok {
+			candidates, err = contextual.SearchWithDistancesContext(ctx, values, candidateLimit, *candidateBuf)
 		} else {
 			candidates, err = annIndex.SearchWithDistancesInto(values, candidateLimit, *candidateBuf)
 		}
@@ -1394,6 +1484,9 @@ func (s *Service) searchANN(values []float64, k int) ([]SearchResult, bool, erro
 		candidates, err = annIndex.SearchWithDistancesInto(values, candidateLimit, *candidateBuf)
 	}
 	defer s.putANNResultBuffer(candidateBuf, candidates)
+	if ctx.Err() != nil {
+		return nil, false, ctx.Err()
+	}
 	if err != nil {
 		s.stats.annSearchErrorsTotal.Add(1)
 		return nil, false, nil
@@ -1879,30 +1972,128 @@ func (s *Service) loadSnapshot() error {
 }
 
 func (s *Service) rebuildANNLocked() {
+	if err := s.rebuildANNCheckedLocked(); err != nil {
+		s.annRebuildFailures.Add(1)
+		message := err.Error()
+		s.annRebuildLastError.Store(&message)
+	} else {
+		s.annRebuildSuccesses.Add(1)
+		s.annRebuildLastError.Store(nil)
+	}
+}
+
+func (s *Service) rebuildANNCheckedLocked() error {
 	s.ensureRuntimeDeps()
-	vectors := s.index.ListVectors()
+	var vectors []index.Vector
 	var nextIndex ANNIndex
 	builderActive := false
-	if s.annBuilder != nil {
+	if s.annBackend == "hierarchical-hnsw" {
+		type snapshotVector32 struct {
+			id         string
+			internalID int
+		}
+		snapshot := make([]snapshotVector32, 0, s.currentANNIndex().Stats().Nodes)
+		var snapshotBytes uint64
+		var snapshotErr error
+		appendVector32 := func(id string, values []float32, borrowed bool) bool {
+			nextBytes := snapshotBytes + uint64(len(values))*4
+			if nextBytes < snapshotBytes || s.annRebuildSnapshotBudgetBytes > 0 && nextBytes > s.annRebuildSnapshotBudgetBytes {
+				snapshotErr = fmt.Errorf("ANN rebuild snapshot payload exceeds budget %d", s.annRebuildSnapshotBudgetBytes)
+				return false
+			}
+			snapshotBytes = nextBytes
+			snapshot = append(snapshot, snapshotVector32{id: id})
+			return true
+		}
+		if ranger, ok := s.index.(interface {
+			RangeVectors32(func(string, []float32) bool)
+		}); ok {
+			ranger.RangeVectors32(func(id string, values []float32) bool { return appendVector32(id, values, true) })
+		} else {
+			for _, vector := range s.index.ListVectors() {
+				values := make([]float32, len(vector.Values))
+				for dimension, value := range vector.Values {
+					values[dimension] = float32(value)
+				}
+				if !appendVector32(vector.ID, values, false) {
+					break
+				}
+			}
+		}
+		// Map-backed indexes have intentionally unspecified iteration order.
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		// Resolve previously unseen IDs only after sorting the immutable
+		// snapshot, otherwise identical rebuilds can produce different HNSW
+		// insertion orders and materially different recall.
+		sort.Slice(snapshot, func(left, right int) bool { return snapshot[left].id < snapshot[right].id })
+		for position, vector := range snapshot {
+			internalID, err := s.assignID(vector.id)
+			if err != nil {
+				return err
+			}
+			snapshot[position].internalID = internalID
+		}
+		sort.Slice(snapshot, func(left, right int) bool { return snapshot[left].internalID < snapshot[right].internalID })
+		// persistMu protects the canonical source throughout this rebuild. Keep
+		// only O(N) ID descriptors, not an additional O(N*D) payload snapshot.
+		// The private builder copies each transient payload into its final arena.
+		var scratch []float32
+		candidate, err := ann.BuildHierarchicalIndexFromSource(s.annOptions, len(snapshot), func(position int) (ann.BatchVector32, error) {
+			record := snapshot[position]
+			if reader, ok := s.index.(interface {
+				CopyVector32(string, []float32) ([]float32, error)
+			}); ok {
+				var err error
+				scratch, err = reader.CopyVector32(record.id, scratch)
+				return ann.BatchVector32{ID: record.internalID, Values: scratch}, err
+			}
+			v, err := s.index.SearchVector(record.id)
+			if err != nil {
+				return ann.BatchVector32{}, err
+			}
+			if cap(scratch) < len(v.Values) {
+				scratch = make([]float32, len(v.Values))
+			}
+			scratch = scratch[:len(v.Values)]
+			for i, value := range v.Values {
+				scratch[i] = float32(value)
+			}
+			return ann.BatchVector32{ID: record.internalID, Values: scratch}, nil
+		})
+		if err != nil {
+			return err
+		}
+		nextIndex = candidate
+	} else {
+		vectors = s.index.ListVectors()
+	}
+	if nextIndex == nil && s.annBuilder != nil {
 		if candidate, err := s.annBuilder(vectors); err == nil && candidate != nil {
 			nextIndex = candidate
 			builderActive = true
 		}
 	}
-	if nextIndex == nil && s.annSegmented {
-		nextIndex = ann.NewSegmentedIndex(s.annOptions, s.annSegmentMaxNodes)
-	} else if nextIndex == nil {
-		nextIndex = ann.NewAnnIndexWithOptions(s.annOptions)
+	if nextIndex == nil {
+		nextIndex = newConfiguredANNIndex(s.annBackend, s.annOptions, s.annSegmented, s.annSegmentMaxNodes, len(vectors))
 	}
 	// Builders may already populate the candidate. The compatibility indexes
 	// need the replay, while a populated custom candidate must not duplicate it.
-	if s.annBuilder == nil || nextIndex.Stats().Nodes == 0 {
+	if nextIndex.Stats().Nodes == 0 {
 		for _, vec := range vectors {
 			internalID, err := s.assignID(vec.ID)
 			if err != nil {
-				return
+				return err
 			}
-			_ = nextIndex.AddVector(internalID, vec.Values)
+			if err := nextIndex.AddVector(internalID, vec.Values); err != nil {
+				return err
+			}
+		}
+	}
+	if validator, ok := nextIndex.(interface{ Validate() error }); ok {
+		if err := validator.Validate(); err != nil {
+			return err
 		}
 	}
 	s.annMu.Lock()
@@ -1913,6 +2104,7 @@ func (s *Service) rebuildANNLocked() {
 	if closer, ok := previous.(interface{ Close() error }); ok {
 		_ = closer.Close()
 	}
+	return nil
 }
 
 func (s *Service) loadVectorStoreState() error {
@@ -1959,6 +2151,8 @@ func (s *Service) loadVectorStoreState() error {
 func (s *Service) Stats() ServiceStats {
 	annStats := s.currentANNIndex().Stats()
 	stats := ServiceStats{
+		ANNRebuildFailures:     s.annRebuildFailures.Load(),
+		ANNRebuildSuccesses:    s.annRebuildSuccesses.Load(),
 		ShardCount:             1,
 		SearchRequestsTotal:    s.stats.searchRequestsTotal.Load(),
 		ExactSearchesTotal:     s.stats.exactSearchesTotal.Load(),
@@ -1980,6 +2174,9 @@ func (s *Service) Stats() ServiceStats {
 		ANNSegmentRouting:      s.annOptions.SegmentRouting,
 		ANNDiversifiedPruning:  s.annOptions.DiversifiedPruning,
 		ANNCheckpointLoaded:    s.annCheckpointLoaded.Load(),
+	}
+	if message := s.annRebuildLastError.Load(); message != nil {
+		stats.ANNRebuildLastError = *message
 	}
 	if memoryReader, ok := s.currentANNIndex().(interface{ MemoryStats() ann.MemoryStats }); ok {
 		memory := memoryReader.MemoryStats()
@@ -2010,6 +2207,45 @@ func (s *Service) Stats() ServiceStats {
 	} else if annStats.Nodes > 0 {
 		stats.ANNSegments = 1
 	}
+	if maintenance, ok := s.currentANNIndex().(interface {
+		MaintenanceState() (bool, bool, bool)
+	}); ok {
+		pending, compacting, compactable := maintenance.MaintenanceState()
+		if pending {
+			stats.ANNCompactionPending = 1
+		}
+		if compacting {
+			stats.ANNCompacting = 1
+		}
+		if compactable {
+			stats.ANNCompactionCompactable = 1
+		}
+	}
+	if retirement, ok := s.currentANNIndex().(interface {
+		RetirementState() (int, int, uint64, uint64)
+	}); ok {
+		stats.ANNReaders, stats.ANNRetiredSegments, stats.ANNReclaimedSegments, stats.ANNReclaimErrors = retirement.RetirementState()
+	}
+	if memoryBudget, ok := s.currentANNIndex().(interface {
+		CompactionMemoryState() (uint64, uint64, uint64, uint64)
+	}); ok {
+		stats.ANNCompactionMemoryBudget, stats.ANNCompactionMemoryReserved, stats.ANNCompactionMemoryEstimate, stats.ANNCompactionMemoryDeferred = memoryBudget.CompactionMemoryState()
+	}
+	if searchBudget, ok := s.currentANNIndex().(interface {
+		SearchBudgetState() (uint64, uint64, uint64)
+	}); ok {
+		stats.ANNSearchBudgetQueries, stats.ANNSearchBudgetSegments, stats.ANNSearchEFBudget = searchBudget.SearchBudgetState()
+	}
+	if searchConfig, ok := s.currentANNIndex().(interface {
+		SearchConfigState() (string, string, int, bool)
+	}); ok {
+		stats.ANNSearchExecution, stats.ANNEFBudgetMode, stats.ANNEFGlobalPercent, stats.ANNPrimaryIndexEnabled = searchConfig.SearchConfigState()
+	}
+	if primaryBuild, ok := s.currentANNIndex().(interface {
+		PrimaryBuildState() (bool, uint64, uint64, uint64, uint64)
+	}); ok {
+		stats.ANNPrimaryBuildActive, stats.ANNPrimaryBuildTotal, stats.ANNPrimaryBuildDone, stats.ANNPrimaryBuildDurationMs, stats.ANNPrimaryBuildFailures = primaryBuild.PrimaryBuildState()
+	}
 	if cacheStatsReader, ok := s.vectorStore.(interface{ Stats() CacheStats }); ok {
 		cacheStats := cacheStatsReader.Stats()
 		stats.CacheHitsTotal = cacheStats.Hits
@@ -2028,6 +2264,17 @@ func (s *Service) Stats() ServiceStats {
 		stats.DiskSegments = diskStats.Segments
 	}
 	return stats
+}
+
+// ANNReady reports whether the published ANN generation contains the expected
+// number of live vectors. It is used by benchmark adapters to separate
+// durable ingestion from searchable index readiness.
+func (s *Service) ANNReady(expected int) bool {
+	if expected <= 0 {
+		return false
+	}
+	stats := s.currentANNIndex().Stats()
+	return stats.Nodes-stats.Deleted >= expected
 }
 
 func (s *Service) Close() error {
@@ -2138,13 +2385,27 @@ func (s *Service) currentANNIndex() ANNIndex {
 	s.annMu.Lock()
 	defer s.annMu.Unlock()
 	if s.annIndex == nil {
-		if s.annSegmented {
-			s.annIndex = ann.NewSegmentedIndex(s.annOptions, s.annSegmentMaxNodes)
-		} else {
-			s.annIndex = ann.NewAnnIndexWithOptions(s.annOptions)
-		}
+		s.annIndex = newConfiguredANNIndex(s.annBackend, s.annOptions, s.annSegmented, s.annSegmentMaxNodes, 0)
 	}
 	return s.annIndex
+}
+
+func normalizeANNBackend(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "hierarchical-hnsw" {
+		return value
+	}
+	return "hnsw"
+}
+
+func newConfiguredANNIndex(backend string, options ann.Options, segmented bool, segmentMaxNodes, capacity int) ANNIndex {
+	if normalizeANNBackend(backend) == "hierarchical-hnsw" {
+		return ann.NewHierarchicalIndexWithCapacity(options, capacity)
+	}
+	if segmented {
+		return ann.NewSegmentedIndex(options, segmentMaxNodes)
+	}
+	return ann.NewAnnIndexWithOptions(options)
 }
 
 func (s *Service) addANNVector(internalID int, values []float64) error {
@@ -2210,6 +2471,26 @@ func (s *Service) deleteANNVector(internalID int) {
 func (s *Service) buildMetricANNLocked(metric DistanceMetric) (ANNIndex, error) {
 	options := s.annOptions
 	options.Metric = string(metric)
+	if s.annBackend == "hierarchical-hnsw" {
+		batch := make([]ann.BatchVector32, 0, 10000)
+		var buildErr error
+		s.rangeExactVectors(func(id string, values []float32) bool {
+			internalID, err := s.assignID(id)
+			if err == nil {
+				batch = append(batch, ann.BatchVector32{ID: internalID, Values: append([]float32(nil), values...)})
+			}
+			if err != nil {
+				buildErr = err
+				return false
+			}
+			return true
+		})
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		sort.Slice(batch, func(left, right int) bool { return batch[left].ID < batch[right].ID })
+		return ann.BuildHierarchicalIndex(options, batch)
+	}
 	options.QuantizeSegments = true
 	options.DiversifiedPruning = true
 	options.SegmentRouting = s.annOptions.SegmentRouting
@@ -2533,12 +2814,22 @@ func applyANNProfile(profile string, options ann.Options) ann.Options {
 	}
 	// Profiles provide deterministic defaults while allowing any explicit
 	// positive option to override the profile's value.
-	defaults := ann.Options{M: 16, EfConstruction: 64, EfSearch: 64, Seed: options.Seed, QuantizeSegments: options.QuantizeSegments, SegmentRouting: options.SegmentRouting, DiversifiedPruning: options.DiversifiedPruning}
+	// Preserve advanced and backend-specific options. Profiles own only the
+	// three tuning defaults below; rebuilding Options with a struct literal
+	// silently disabled metric, reciprocal pruning and other opt-in behavior.
+	defaults := options
+	defaults.M = 16
+	defaults.EfConstruction = 64
+	defaults.EfSearch = 64
 	switch normalizeANNProfile(profile) {
 	case "fast":
-		defaults = ann.Options{M: 8, EfConstruction: 32, EfSearch: 32, Seed: options.Seed, QuantizeSegments: options.QuantizeSegments, SegmentRouting: options.SegmentRouting, DiversifiedPruning: options.DiversifiedPruning}
+		defaults.M = 8
+		defaults.EfConstruction = 32
+		defaults.EfSearch = 32
 	case "quality":
-		defaults = ann.Options{M: 32, EfConstruction: 128, EfSearch: 128, Seed: options.Seed, QuantizeSegments: options.QuantizeSegments, SegmentRouting: options.SegmentRouting, DiversifiedPruning: options.DiversifiedPruning}
+		defaults.M = 32
+		defaults.EfConstruction = 128
+		defaults.EfSearch = 128
 	}
 	if options.M > 0 {
 		defaults.M = options.M

@@ -1,6 +1,7 @@
 package ann
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -183,11 +184,23 @@ func (i *IVFIndex) Search(query []float64, k int) ([]Result, error) {
 	return i.searchWithProbes(query, k, i.nprobe)
 }
 
+func (i *IVFIndex) SearchContext(ctx context.Context, query []float64, k int) ([]Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	hits, _, err := i.searchWithProbesCount(query, k, i.nprobe, ctx)
+	return hits, err
+}
+
 // SearchAdaptive progressively probes additional IVF lists when the initial
 // candidate set is too small. It is opt-in so existing latency characteristics
 // of Search remain unchanged. minCandidates is the desired pre-rerank pool;
 // maxProbe is capped to the number of trained centroids.
 func (i *IVFIndex) SearchAdaptive(query []float64, k, minCandidates, maxProbe int) ([]Result, error) {
+	return i.SearchAdaptiveContext(context.Background(), query, k, minCandidates, maxProbe)
+}
+
+func (i *IVFIndex) SearchAdaptiveContext(ctx context.Context, query []float64, k, minCandidates, maxProbe int) ([]Result, error) {
 	if i == nil {
 		return nil, fmt.Errorf("index is nil")
 	}
@@ -202,7 +215,7 @@ func (i *IVFIndex) SearchAdaptive(query []float64, k, minCandidates, maxProbe in
 		probes = maxProbe
 	}
 	for {
-		hits, candidateCount, err := i.searchWithProbesCount(query, k, probes)
+		hits, candidateCount, err := i.searchWithProbesCount(query, k, probes, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -228,14 +241,21 @@ func (i *IVFIndex) searchWithProbes(query []float64, k, probes int) ([]Result, e
 	return hits, err
 }
 
-func (i *IVFIndex) searchWithProbesCount(query []float64, k, probes int) ([]Result, int, error) {
+func (i *IVFIndex) searchWithProbesCount(query []float64, k, probes int, contexts ...context.Context) ([]Result, int, error) {
+	ctx := searchContext(contexts)
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	if i == nil || len(query) != len(i.centroids[0]) {
 		return nil, 0, fmt.Errorf("query dimension mismatch")
 	}
 	if k <= 0 {
 		return nil, 0, ErrInvalidK
 	}
-	order := i.closestCentroids(query, probes)
+	order := i.closestCentroids(query, probes, ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	hits := make([]Result, 0)
 	seen := make(map[int]struct{})
 	if probes <= 0 {
@@ -246,6 +266,9 @@ func (i *IVFIndex) searchWithProbesCount(query []float64, k, probes int) ([]Resu
 	}
 	for _, list := range order[:probes] {
 		for _, entry := range i.lists[list] {
+			if ctx.Err() != nil {
+				return nil, 0, ctx.Err()
+			}
 			if _, ok := seen[entry.id]; ok {
 				continue
 			}
@@ -262,19 +285,26 @@ func (i *IVFIndex) searchWithProbesCount(query []float64, k, probes int) ([]Resu
 	if len(hits) > k {
 		hits = hits[:k]
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	return hits, len(seen), nil
 }
 
 // closestCentroids selects only the requested prefix instead of sorting every
 // centroid. For the normal small-P regime this changes query-side centroid
 // selection from O(C log C) to O(C·P), while preserving exact probe ordering.
-func (i *IVFIndex) closestCentroids(query []float64, probes int) []int {
+func (i *IVFIndex) closestCentroids(query []float64, probes int, contexts ...context.Context) []int {
+	ctx := searchContext(contexts)
 	if probes <= 0 || probes > len(i.centroids) {
 		probes = len(i.centroids)
 	}
 	selected := make([]int, 0, probes)
 	distances := make([]float64, 0, probes)
 	for centroidID, centroid := range i.centroids {
+		if ctx.Err() != nil {
+			return nil
+		}
 		distance := l2(query, centroid)
 		position := len(selected)
 		for n := range distances {

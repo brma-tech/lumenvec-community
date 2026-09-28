@@ -44,6 +44,7 @@ func (s *Service) ExportANNState(visit func(PrebuiltANNStateEvent) error) error 
 	snapshot := segmented.SnapshotExport()
 	offset := s.currentDeltaOffsetUnlocked()
 	s.persistMu.Unlock()
+	defer snapshot.Release()
 	if err := visit(PrebuiltANNStateEvent{Kind: 0, Epoch: snapshot.Epoch, DeltaOffset: offset}); err != nil {
 		return err
 	}

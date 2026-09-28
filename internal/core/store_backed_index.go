@@ -19,6 +19,40 @@ func (i *storeBackedIndex) SearchVector(id string) (index.Vector, error) {
 	return i.store.GetVector(id)
 }
 
+func (i *storeBackedIndex) CopyVector32(id string, dst []float32) ([]float32, error) {
+	if reader, ok := i.store.(readOnlyVector32Reader); ok {
+		values, err := reader.GetVectorReadOnly32(id)
+		if err != nil {
+			return nil, err
+		}
+		return append(dst[:0], values...), nil
+	}
+	v, err := i.store.GetVector(id)
+	if err != nil {
+		return nil, err
+	}
+	dst = dst[:0]
+	for _, value := range v.Values {
+		dst = append(dst, float32(value))
+	}
+	return dst, nil
+}
+
+func (i *storeBackedIndex) RangeVectors32(fn func(string, []float32) bool) {
+	if reader, ok := i.store.(rangeVector32Reader); ok {
+		reader.RangeVectors32(fn)
+		return
+	}
+	var scratch []float32
+	i.RangeVectors(func(v index.Vector) bool {
+		scratch = scratch[:0]
+		for _, value := range v.Values {
+			scratch = append(scratch, float32(value))
+		}
+		return fn(v.ID, scratch)
+	})
+}
+
 func (i *storeBackedIndex) DeleteVector(string) error { return nil }
 
 func (i *storeBackedIndex) ListVectors() []index.Vector {

@@ -345,7 +345,7 @@ func (h *grpcHandler) GetVector(_ context.Context, req *lumenvecpb.GetVectorRequ
 	}, nil
 }
 
-func (h *grpcHandler) Search(_ context.Context, req *lumenvecpb.SearchRequest) (*lumenvecpb.SearchResponse, error) {
+func (h *grpcHandler) Search(ctx context.Context, req *lumenvecpb.SearchRequest) (*lumenvecpb.SearchResponse, error) {
 	var results []core.SearchResult
 	var err error
 	metric := core.DistanceMetric(strings.ToLower(req.GetMetric()))
@@ -364,22 +364,22 @@ func (h *grpcHandler) Search(_ context.Context, req *lumenvecpb.SearchRequest) (
 		if structuredSearch, ok := h.service.(interface {
 			SearchStructured([]float64, int, core.StructuredFilter, core.DistanceMetric) ([]core.SearchResult, error)
 		}); ok {
-			results, err = structuredSearch.SearchStructured(req.GetValues(), int(req.GetTopK()), structured, metric)
+			results, err = core.SearchStructuredWithContext(ctx, structuredSearch, req.GetValues(), int(req.GetTopK()), structured, metric)
 		} else if filtered, ok := h.service.(interface {
 			SearchFilteredMetric([]float64, int, core.VectorFilter, core.DistanceMetric) ([]core.SearchResult, error)
 		}); ok {
-			results, err = filtered.SearchFilteredMetric(req.GetValues(), int(req.GetTopK()), func(v index.Vector) bool {
+			results, err = core.SearchFilteredMetricWithContext(ctx, filtered, req.GetValues(), int(req.GetTopK()), func(v index.Vector) bool {
 				return structured.Match(v)
 			}, metric)
 		} else {
 			return nil, status.Error(codes.Unimplemented, "filtered search is not supported by this service")
 		}
 	} else if metric == core.MetricL2 {
-		results, err = h.service.Search(req.GetValues(), int(req.GetTopK()))
+		results, err = core.SearchWithContext(ctx, h.service, req.GetValues(), int(req.GetTopK()))
 	} else if metricSearch, ok := h.service.(interface {
 		SearchFilteredMetric([]float64, int, core.VectorFilter, core.DistanceMetric) ([]core.SearchResult, error)
 	}); ok {
-		results, err = metricSearch.SearchFilteredMetric(req.GetValues(), int(req.GetTopK()), nil, metric)
+		results, err = core.SearchFilteredMetricWithContext(ctx, metricSearch, req.GetValues(), int(req.GetTopK()), nil, metric)
 	} else {
 		return nil, status.Error(codes.Unimplemented, "metric search is not supported by this service")
 	}
@@ -392,7 +392,7 @@ func (h *grpcHandler) Search(_ context.Context, req *lumenvecpb.SearchRequest) (
 	return &lumenvecpb.SearchResponse{Results: toProtoSearchResults(results)}, nil
 }
 
-func (h *grpcHandler) SearchBatch(_ context.Context, req *lumenvecpb.SearchBatchRequest) (*lumenvecpb.SearchBatchResponse, error) {
+func (h *grpcHandler) SearchBatch(ctx context.Context, req *lumenvecpb.SearchBatchRequest) (*lumenvecpb.SearchBatchResponse, error) {
 	queries := make([]core.BatchSearchQuery, 0, len(req.GetQueries()))
 	for _, query := range req.GetQueries() {
 		queries = append(queries, core.BatchSearchQuery{
@@ -402,7 +402,7 @@ func (h *grpcHandler) SearchBatch(_ context.Context, req *lumenvecpb.SearchBatch
 			K:        int(query.GetTopK()),
 		})
 	}
-	results, err := h.service.SearchBatch(queries)
+	results, err := core.SearchBatchWithContext(ctx, h.service, queries)
 	if err != nil {
 		return nil, grpcStatusFromError(err)
 	}
@@ -524,6 +524,10 @@ func grpcStatusFromError(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
 	case grpcCodeFromError(err) == codes.AlreadyExists:
 		return status.Error(codes.AlreadyExists, err.Error())
 	case grpcCodeFromError(err) == codes.NotFound:
