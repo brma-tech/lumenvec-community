@@ -1,6 +1,7 @@
 package ann
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"math"
@@ -8,6 +9,7 @@ import (
 	"math/rand"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	vectorutil "lumenvec/internal/vector"
@@ -41,6 +43,7 @@ type AnnIndex struct {
 	deleted             []bool
 	deletedCount        int
 	entrypoint          int
+	searchEntrypoints   []int
 	hasEntrypoint       bool
 	dim                 int
 	m                   int
@@ -60,6 +63,7 @@ type AnnIndex struct {
 	mappedOwner         snapshotMapping
 	quantMin            []float32
 	quantMax            []float32
+	quantScale          []float32
 	qvectors            []byte
 	immutableIDs        []int64
 	mappedIDs           []byte
@@ -70,7 +74,85 @@ type AnnIndex struct {
 	routeSignatures     []uint32
 	metric              string
 	diversifiedPruning  bool
+	searchQueries       atomic.Uint64
+	searchSegments      atomic.Uint64
+	searchEFBudget      atomic.Uint64
+	searchVisited       atomic.Uint64
+	searchDistances     atomic.Uint64
+	searchFrontierMax   atomic.Uint64
 	mu                  sync.RWMutex
+}
+
+// SearchWorkStats reports cumulative work performed by ANN searches.
+// Counters are diagnostic and do not affect search decisions.
+type SearchWorkStats struct {
+	Queries       uint64
+	Visited       uint64
+	DistanceCalls uint64
+	MaxFrontier   uint64
+}
+
+// TopologyStats describes graph connectivity for offline build diagnostics.
+type TopologyStats struct {
+	Nodes          int
+	AverageDegree  float64
+	MaxDegree      int
+	ReachableNodes int
+}
+
+func (a *AnnIndex) TopologyStats() TopologyStats {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	n := a.nodeCountLocked()
+	if n == 0 {
+		return TopologyStats{}
+	}
+	visited := make([]bool, n)
+	queue := make([]int, 0, n)
+	starts := a.searchEntrypoints
+	if len(starts) == 0 {
+		starts = []int{a.entrypoint}
+	}
+	for _, start := range starts {
+		if start >= 0 && start < n && !visited[start] {
+			visited[start] = true
+			queue = append(queue, start)
+		}
+	}
+	total, maxDegree := 0, 0
+	for slot := 0; slot < n; slot++ {
+		degree := a.neighborCountLocked(slot)
+		total += degree
+		if degree > maxDegree {
+			maxDegree = degree
+		}
+	}
+	for head := 0; head < len(queue); head++ {
+		slot := queue[head]
+		for pos, count := 0, a.neighborCountLocked(slot); pos < count; pos++ {
+			next := a.neighborAtLocked(slot, pos)
+			if next >= 0 && next < n && !visited[next] {
+				visited[next] = true
+				queue = append(queue, next)
+			}
+		}
+	}
+	return TopologyStats{Nodes: n, AverageDegree: float64(total) / float64(n), MaxDegree: maxDegree, ReachableNodes: len(queue)}
+}
+
+// LayoutState describes the immutable storage representation used by an
+// index. It is diagnostic only and does not affect search behavior.
+func (a *AnnIndex) LayoutState() (quantized, compacted, mapped bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.quantized, len(a.adjacencyOffsets) == a.nodeCountLocked()+1, len(a.mappedOffsets) != 0
+}
+
+func (a *AnnIndex) SearchWorkStats() SearchWorkStats {
+	return SearchWorkStats{
+		Queries: a.searchQueries.Load(), Visited: a.searchVisited.Load(),
+		DistanceCalls: a.searchDistances.Load(), MaxFrontier: a.searchFrontierMax.Load(),
+	}
 }
 
 // CompactAdjacency freezes the graph's adjacency lists into one contiguous
@@ -87,6 +169,15 @@ func (a *AnnIndex) SetDiversifiedPruning(enabled bool) {
 	a.mu.Lock()
 	a.diversifiedPruning = enabled
 	a.mu.Unlock()
+}
+
+// SetSearchEntrypoints configures optional independent search starts for an
+// immutable graph. It is intended for consolidated indexes; an empty list
+// retains the historical single-entrypoint behavior.
+func (a *AnnIndex) SetSearchEntrypoints(entries []int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.searchEntrypoints = append(a.searchEntrypoints[:0], entries...)
 }
 
 func (a *AnnIndex) compactAdjacencyLocked() {
@@ -212,6 +303,10 @@ func (a *AnnIndex) Quantize() error {
 	}
 	a.quantMin = minimum
 	a.quantMax = maximum
+	a.quantScale = make([]float32, a.dim)
+	for d := range a.quantScale {
+		a.quantScale[d] = (maximum[d] - minimum[d]) * (1.0 / 255.0)
+	}
 	a.qvectors = arena
 	a.immutableIDs = ids
 	a.deletedBits = deletedBits
@@ -333,6 +428,28 @@ func (a *AnnIndex) nodeVectorLocked(slot int) []float32 {
 func (a *AnnIndex) distanceToNodeLocked(query []float32, slot int) float64 {
 	if !a.quantized {
 		return metricDistance32(a.metric, query, a.nodes[slot].vector)
+	}
+	if a.metric == MetricL2 {
+		// L2 is the hot path for the vNext benchmark. Keep the arithmetic in
+		// float32 until the final accumulation and replace the per-dimension
+		// float64 conversion/division used by the old path. Quantized values
+		// are already bounded to [0,255], so multiplying by 1/255 is exact
+		// enough for the existing approximate-distance contract.
+		var distance float32
+		scales := a.quantScale
+		for d, value := range a.qvectorLocked(slot) {
+			span := float32(0)
+			if d < len(scales) {
+				span = scales[d]
+			} else {
+				// Snapshots written before quantScale existed remain searchable.
+				span = (a.quantMax[d] - a.quantMin[d]) * (1.0 / 255.0)
+			}
+			decoded := a.quantMin[d] + span*float32(value)
+			delta := query[d] - decoded
+			distance += delta * delta
+		}
+		return float64(distance)
 	}
 	var distance, dot, queryNorm, vectorNorm float64
 	for d, value := range a.qvectorLocked(slot) {
@@ -507,6 +624,20 @@ type Options struct {
 	SegmentRouting     bool
 	Metric             string
 	DiversifiedPruning bool
+	// DiversifiedExistingPruning enables experimental full-list pruning for
+	// existing HNSW neighbor arrays. It is disabled by default.
+	DiversifiedExistingPruning bool
+	// HierarchicalBuildScratchBudgetBytes limits the deterministic upper bound
+	// of the hierarchical builder's private neighbor-cache scratch. Zero keeps
+	// backward-compatible unlimited behavior. The candidate generation is
+	// rejected before graph construction when the bound exceeds this budget.
+	HierarchicalBuildScratchBudgetBytes uint64
+	// HierarchicalUpperLayerEF controls the optional beam used while descending
+	// upper HNSW layers. Values <= 1 preserve classic greedy navigation.
+	HierarchicalUpperLayerEF       int
+	HierarchicalLevelMultiplier    float64
+	HierarchicalMaxLevel           int
+	HierarchicalEntrypointPoolSize int
 }
 
 func NewAnnIndex() *AnnIndex {
@@ -561,6 +692,9 @@ func normalizeMetric(metric string) string {
 }
 
 func metricDistance32(metric string, left, right []float32) float64 {
+	if metric == MetricL2 {
+		return vectorutil.SquaredEuclideanDistance32FastSameLen(left, right)
+	}
 	var distance, dot, leftNorm, rightNorm float64
 	for dimension, leftValue := range left {
 		l := float64(leftValue)
@@ -674,6 +808,17 @@ func (a *AnnIndex) AddVector32(id int, vector []float32) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.addVector32Locked(id, vector)
+}
+
+// addVector32Locked appends one vector while the caller owns a write lock.
+// Bulk builders use this primitive to hold the lock once for an entire
+// generation, avoiding one mutex transition per vector without changing the
+// graph construction semantics of incremental inserts.
+func (a *AnnIndex) addVector32Locked(id int, vector []float32) error {
+	if len(vector) == 0 {
+		return ErrInvalidVectorDim
+	}
 	if a.quantized {
 		return ErrQuantizedIndex
 	}
@@ -744,13 +889,27 @@ func (a *AnnIndex) SearchWithDistances(query []float64, k int) ([]Result, error)
 }
 
 func (a *AnnIndex) SearchWithDistancesInto(query []float64, k int, dst []Result) ([]Result, error) {
-	return a.SearchWithDistancesEfInto(query, k, a.efSearch, dst)
+	return a.SearchWithDistancesContext(context.Background(), query, k, dst)
+}
+
+func (a *AnnIndex) SearchWithDistancesContext(ctx context.Context, query []float64, k int, dst []Result) ([]Result, error) {
+	a.mu.RLock()
+	ef := a.efSearch
+	a.mu.RUnlock()
+	return a.SearchWithDistancesEfContext(ctx, query, k, ef, dst)
 }
 
 // SearchWithDistancesEfInto allows a segmented coordinator to distribute a
 // bounded probe budget across many immutable graphs. Standalone callers keep
 // the configured efSearch through SearchWithDistancesInto.
 func (a *AnnIndex) SearchWithDistancesEfInto(query []float64, k, ef int, dst []Result) ([]Result, error) {
+	return a.SearchWithDistancesEfContext(context.Background(), query, k, ef, dst)
+}
+
+func (a *AnnIndex) SearchWithDistancesEfContext(ctx context.Context, query []float64, k, ef int, dst []Result) ([]Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if k <= 0 {
 		return nil, ErrInvalidK
 	}
@@ -770,7 +929,19 @@ func (a *AnnIndex) SearchWithDistancesEfInto(query []float64, k, ef int, dst []R
 	if a.efSearch >= k && ef > a.efSearch {
 		ef = a.efSearch
 	}
-	return a.searchResults64Locked(query, k, ef, dst), nil
+	a.searchEFBudget.Add(uint64(ef))
+	a.searchSegments.Add(1)
+	results := a.searchResults64Locked(query, k, ef, dst, ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// SearchBudgetState exposes the same budget contract as SegmentedIndex for
+// single-index profiles used by the HTTP benchmark.
+func (a *AnnIndex) SearchBudgetState() (queries, segments, efBudget uint64) {
+	return a.searchQueries.Load(), a.searchSegments.Load(), a.searchEFBudget.Load()
 }
 
 func (a *AnnIndex) DeleteVector(id int) {
@@ -808,6 +979,14 @@ func (a *AnnIndex) Stats() Stats {
 	}
 }
 
+// IsEmpty reports whether the index has no searchable nodes. It avoids
+// materializing the full Stats value on hot fanout paths.
+func (a *AnnIndex) IsEmpty() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.nodeCountLocked() == 0
+}
+
 func (a *AnnIndex) searchCandidates32Locked(query []float32, ef int) []distancePair {
 	if ef <= 0 {
 		ef = a.efSearch
@@ -842,17 +1021,32 @@ func (a *AnnIndex) searchIDs64Locked(query []float64, k int, ef int) []int {
 	return a.nearestExternalIDs(candidates, k)
 }
 
-func (a *AnnIndex) searchResults64Locked(query []float64, k int, ef int, dst []Result) []Result {
+func (a *AnnIndex) searchResults64Locked(query []float64, k int, ef int, dst []Result, contexts ...context.Context) []Result {
 	if ef <= 0 {
 		ef = a.efSearch
 	}
 
 	ws := a.workspacePool.Get().(*searchWorkspace)
 	ws.reset(ef, a.nodeCountLocked())
-	defer a.workspacePool.Put(ws)
+	if len(contexts) > 0 {
+		ws.queryContext = contexts[0]
+	}
+	defer func() {
+		ws.queryContext = nil
+		a.workspacePool.Put(ws)
+	}()
 
 	query32 := ws.query32From64(query)
 	candidates := a.searchCandidates32WithWorkspaceLocked(ws, ef, query32)
+	a.searchQueries.Add(1)
+	a.searchVisited.Add(ws.visitedCount)
+	a.searchDistances.Add(ws.distanceCount)
+	for {
+		old := a.searchFrontierMax.Load()
+		if ws.maxFrontier <= old || a.searchFrontierMax.CompareAndSwap(old, ws.maxFrontier) {
+			break
+		}
+	}
 	candidates = a.liveCandidates(candidates)
 	return a.nearestResults(candidates, k, dst)
 }
@@ -861,14 +1055,26 @@ func (a *AnnIndex) searchCandidates32WithWorkspaceLocked(ws *searchWorkspace, ef
 	minQ := ws.minQ
 	maxQ := ws.maxQ
 
-	start := a.entrypoint
-	startDist := a.distanceToNodeLocked(query, start)
+	starts := a.searchEntrypoints
+	if len(starts) == 0 {
+		starts = []int{a.entrypoint}
+	}
+	for _, start := range starts {
+		if start < 0 || start >= a.nodeCountLocked() || ws.isVisited(start) {
+			continue
+		}
+		startDist := a.distanceToNodeLocked(query, start)
+		ws.distanceCount++
+		minQ.Push(distancePair{id: start, distance: startDist})
+		maxQ.Push(distancePair{id: start, distance: startDist})
+		ws.markVisited(start)
+		ws.visitedCount++
+	}
 
-	minQ.Push(distancePair{id: start, distance: startDist})
-	maxQ.Push(distancePair{id: start, distance: startDist})
-	ws.markVisited(start)
-
-	for minQ.Len() > 0 {
+	for iteration := 0; minQ.Len() > 0; iteration++ {
+		if iteration%64 == 0 && ws.queryContext != nil && ws.queryContext.Err() != nil {
+			break
+		}
 		current := minQ.Pop()
 
 		worst := maxQ.Peek()
@@ -878,21 +1084,28 @@ func (a *AnnIndex) searchCandidates32WithWorkspaceLocked(ws *searchWorkspace, ef
 
 		for neighborPosition, neighborCount := 0, a.neighborCountLocked(current.id); neighborPosition < neighborCount; neighborPosition++ {
 			nid := a.neighborAtLocked(current.id, neighborPosition)
-			if ws.isVisited(nid) {
+			if !ws.visit(nid) {
 				continue
 			}
-			ws.markVisited(nid)
+			ws.visitedCount++
 
 			dist := a.distanceToNodeLocked(query, nid)
+			ws.distanceCount++
 			dp := distancePair{id: nid, distance: dist}
 			if maxQ.Len() < ef {
 				minQ.Push(dp)
 				maxQ.Push(dp)
+				if uint64(minQ.Len()) > ws.maxFrontier {
+					ws.maxFrontier = uint64(minQ.Len())
+				}
 				continue
 			}
 			if dist < maxQ.Peek().distance {
 				minQ.Push(dp)
 				maxQ.ReplaceTop(dp)
+				if uint64(minQ.Len()) > ws.maxFrontier {
+					ws.maxFrontier = uint64(minQ.Len())
+				}
 			}
 		}
 	}
@@ -916,15 +1129,22 @@ func (w *searchWorkspace) drainCandidates(maxQ maxDistHeap) []distancePair {
 }
 
 type searchWorkspace struct {
-	visitedMarks []uint32
-	visitEpoch   uint32
-	minQ         minDistHeap
-	maxQ         maxDistHeap
-	candidates   []distancePair
-	query32      []float32
+	queryContext  context.Context
+	visitedMarks  []uint32
+	visitEpoch    uint32
+	minQ          minDistHeap
+	maxQ          maxDistHeap
+	candidates    []distancePair
+	query32       []float32
+	visitedCount  uint64
+	distanceCount uint64
+	maxFrontier   uint64
 }
 
 func (w *searchWorkspace) reset(ef int, nodes int) {
+	w.visitedCount = 0
+	w.distanceCount = 0
+	w.maxFrontier = 0
 	if cap(w.visitedMarks) < nodes {
 		// Grow geometrically. During bulk HNSW construction the number of
 		// nodes increases one at a time; allocating exactly `nodes` here would
@@ -964,6 +1184,10 @@ func (w *searchWorkspace) reset(ef int, nodes int) {
 	}
 }
 
+func (w *searchWorkspace) isVisited(slot int) bool {
+	return slot >= 0 && slot < len(w.visitedMarks) && w.visitedMarks[slot] == w.visitEpoch
+}
+
 func (w *searchWorkspace) query32From64(query []float64) []float32 {
 	if cap(w.query32) < len(query) {
 		w.query32 = make([]float32, len(query))
@@ -976,12 +1200,16 @@ func (w *searchWorkspace) query32From64(query []float64) []float32 {
 	return w.query32
 }
 
-func (w *searchWorkspace) isVisited(slot int) bool {
-	return w.visitedMarks[slot] == w.visitEpoch
-}
-
 func (w *searchWorkspace) markVisited(slot int) {
 	w.visitedMarks[slot] = w.visitEpoch
+}
+
+func (w *searchWorkspace) visit(slot int) bool {
+	if w.visitedMarks[slot] == w.visitEpoch {
+		return false
+	}
+	w.visitedMarks[slot] = w.visitEpoch
+	return true
 }
 
 func (a *AnnIndex) liveCandidates(candidates []distancePair) []distancePair {

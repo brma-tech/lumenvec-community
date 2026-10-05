@@ -590,11 +590,11 @@ func normalizeProtocol(protocol string) string {
 
 func applyANNProfileDefaults(cfg *Config) {
 	if strings.TrimSpace(cfg.Search.ANNBackend) == "" {
-		cfg.Search.ANNBackend = "hnsw"
+		cfg.Search.ANNBackend = "hierarchical-hnsw"
 	} else {
 		cfg.Search.ANNBackend = strings.ToLower(strings.TrimSpace(cfg.Search.ANNBackend))
-		if cfg.Search.ANNBackend != "hnsw" && cfg.Search.ANNBackend != "ivf" {
-			cfg.Search.ANNBackend = "hnsw"
+		if cfg.Search.ANNBackend != "hnsw" && cfg.Search.ANNBackend != "hierarchical-hnsw" && cfg.Search.ANNBackend != "ivf" {
+			cfg.Search.ANNBackend = "hierarchical-hnsw"
 		}
 	}
 	if cfg.Search.IVFCentroids <= 0 {

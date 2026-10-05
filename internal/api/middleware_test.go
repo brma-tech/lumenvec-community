@@ -147,7 +147,9 @@ func TestRateLimitNamespaceBucketsAreIndependent(t *testing.T) {
 		req.Header.Set(namespaceQuotaHeader, namespace)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNoContent { t.Fatalf("namespace %s got %d", namespace, rec.Code) }
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("namespace %s got %d", namespace, rec.Code)
+		}
 	}
 }
 
@@ -158,18 +160,24 @@ func TestRotateAPIKeyUpdatesHTTPAuthentication(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer old-key")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent { t.Fatalf("old key status=%d", rec.Code) }
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("old key status=%d", rec.Code)
+	}
 	server.RotateAPIKey("new-key")
 	req = httptest.NewRequest(http.MethodGet, "/vectors", nil)
 	req.Header.Set("Authorization", "Bearer old-key")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized { t.Fatalf("old key after rotation status=%d", rec.Code) }
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old key after rotation status=%d", rec.Code)
+	}
 	req = httptest.NewRequest(http.MethodGet, "/vectors", nil)
 	req.Header.Set("Authorization", "Bearer new-key")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent { t.Fatalf("new key status=%d", rec.Code) }
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("new key status=%d", rec.Code)
+	}
 }
 
 func TestRequestIDMiddleware(t *testing.T) {
@@ -215,8 +223,12 @@ func TestAccessLogPersistsAuditEvents(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	data, err := os.ReadFile(server.auditLogPath)
-	if err != nil { t.Fatal(err) }
-	if !strings.Contains(string(data), `"namespace":"team-a"`) { t.Fatalf("audit missing namespace: %s", data) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"namespace":"team-a"`) {
+		t.Fatalf("audit missing namespace: %s", data)
+	}
 }
 
 func TestRateLimiterBranches(t *testing.T) {
@@ -392,6 +404,20 @@ func TestMetricsEndpointExposesCoreStats(t *testing.T) {
 		"lumenvec_core_ann_search_hits_total",
 		"lumenvec_core_ann_candidates_returned_total",
 		"lumenvec_core_ann_segments",
+		"lumenvec_core_ann_compaction_pending",
+		"lumenvec_core_ann_compacting",
+		"lumenvec_core_ann_compaction_compactable",
+		"lumenvec_core_ann_readers",
+		"lumenvec_core_ann_retired_segments",
+		"lumenvec_core_ann_reclaimed_segments_total",
+		"lumenvec_core_ann_reclaim_errors_total",
+		"lumenvec_core_ann_compaction_memory_budget_bytes",
+		"lumenvec_core_ann_compaction_memory_reserved_bytes",
+		"lumenvec_core_ann_compaction_memory_estimate_bytes",
+		"lumenvec_core_ann_compaction_memory_deferred_total",
+		"lumenvec_core_ann_search_budget_queries_total",
+		"lumenvec_core_ann_search_budget_segments_total",
+		"lumenvec_core_ann_search_ef_budget_total",
 		"lumenvec_core_ann_checkpoint_loaded",
 		"lumenvec_core_shards",
 		"lumenvec_core_replication_committed_offset",

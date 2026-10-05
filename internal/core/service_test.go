@@ -67,6 +67,7 @@ func TestServiceStagedBulkIngestPublishesImmutableANN(t *testing.T) {
 		t.Fatal("expected segmented ANN")
 	}
 	snapshot := segmented.SnapshotExport()
+	defer snapshot.Release()
 	if len(snapshot.Segments) != 1 || len(snapshot.Tail) != 0 {
 		t.Fatalf("segments=%d tail=%d, want immutable-only publication", len(snapshot.Segments), len(snapshot.Tail))
 	}
@@ -94,6 +95,7 @@ func TestServiceConfiguredStagedFloat32IngestPublishesImmutableANN(t *testing.T)
 	}
 	segmented := service.currentANNIndex().(*ann.SegmentedIndex)
 	snapshot := segmented.SnapshotExport()
+	defer snapshot.Release()
 	if len(snapshot.Segments) != 1 || len(snapshot.Tail) != 0 {
 		t.Fatalf("segments=%d tail=%d, want immutable-only publication", len(snapshot.Segments), len(snapshot.Tail))
 	}
@@ -366,8 +368,12 @@ func TestANNProfilesApplyAdaptiveDefaults(t *testing.T) {
 	if fast.M != 8 || fast.EfSearch != 32 || quality.M != 32 || quality.EfSearch != 128 || balanced.M != 16 {
 		t.Fatalf("fast=%+v quality=%+v balanced=%+v", fast, quality, balanced)
 	}
-	override := applyANNProfile("fast", ann.Options{M: 20, EfSearch: 90, QuantizeSegments: true})
-	if override.M != 20 || override.EfSearch != 90 || override.EfConstruction != 32 || !override.QuantizeSegments {
+	override := applyANNProfile("fast", ann.Options{
+		M: 20, EfSearch: 90, QuantizeSegments: true, Metric: ann.MetricCosine,
+		DiversifiedExistingPruning: true,
+	})
+	if override.M != 20 || override.EfSearch != 90 || override.EfConstruction != 32 || !override.QuantizeSegments ||
+		override.Metric != ann.MetricCosine || !override.DiversifiedExistingPruning {
 		t.Fatalf("override=%+v", override)
 	}
 }

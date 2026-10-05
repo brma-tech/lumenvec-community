@@ -183,12 +183,19 @@ func (i *IVFANNIndex) AddVector(id int, vector []float64) error {
 	return nil
 }
 func (i *IVFANNIndex) SearchWithDistancesInto(query []float64, k int, dst []Result) ([]Result, error) {
+	return i.SearchWithDistancesContext(context.Background(), query, k, dst)
+}
+
+func (i *IVFANNIndex) SearchWithDistancesContext(ctx context.Context, query []float64, k int, dst []Result) ([]Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	if i == nil {
 		return nil, fmt.Errorf("index is nil")
 	}
-	hits, err := i.index.Search(query, k+len(i.deleted))
+	hits, err := i.index.SearchContext(ctx, query, k+len(i.deleted))
 	if err != nil {
 		return nil, err
 	}
@@ -208,12 +215,19 @@ func (i *IVFANNIndex) SearchWithDistancesInto(query []float64, k int, dst []Resu
 // SearchAdaptiveWithDistancesInto exposes the adaptive IVF probe policy while
 // retaining the ANNIndex-compatible SearchWithDistancesInto method unchanged.
 func (i *IVFANNIndex) SearchAdaptiveWithDistancesInto(query []float64, k, minCandidates, maxProbe int, dst []Result) ([]Result, error) {
+	return i.SearchAdaptiveWithDistancesContext(context.Background(), query, k, minCandidates, maxProbe, dst)
+}
+
+func (i *IVFANNIndex) SearchAdaptiveWithDistancesContext(ctx context.Context, query []float64, k, minCandidates, maxProbe int, dst []Result) ([]Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	if i == nil {
 		return nil, fmt.Errorf("index is nil")
 	}
-	hits, err := i.index.SearchAdaptive(query, k+len(i.deleted), minCandidates, maxProbe)
+	hits, err := i.index.SearchAdaptiveContext(ctx, query, k+len(i.deleted), minCandidates, maxProbe)
 	if err != nil {
 		return nil, err
 	}

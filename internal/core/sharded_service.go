@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -1123,9 +1124,13 @@ func (s *ShardedService) DeleteVector(id string) error {
 }
 
 func (s *ShardedService) Search(values []float64, k int) ([]SearchResult, error) {
+	return s.SearchContext(context.Background(), values, k)
+}
+
+func (s *ShardedService) SearchContext(ctx context.Context, values []float64, k int) ([]SearchResult, error) {
 	perShard := make([][]SearchResult, len(s.shards))
 	if err := s.parallelShards(func(shardID int, shard VectorService) error {
-		results, err := shard.Search(values, k)
+		results, err := SearchWithContext(ctx, shard, values, k)
 		perShard[shardID] = results
 		return err
 	}); err != nil {
@@ -1162,15 +1167,22 @@ func (s *ShardedService) SearchFiltered(values []float64, k int, filter VectorFi
 // unfiltered cosine and inner-product queries. Each shard returns its bounded
 // local top-k and the coordinator merges the globally comparable distances.
 func (s *ShardedService) SearchFilteredMetric(values []float64, k int, filter VectorFilter, metric DistanceMetric) ([]SearchResult, error) {
+	return s.SearchFilteredMetricContext(context.Background(), values, k, filter, metric)
+}
+
+func (s *ShardedService) SearchFilteredMetricContext(ctx context.Context, values []float64, k int, filter VectorFilter, metric DistanceMetric) ([]SearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	perShard := make([][]SearchResult, len(s.shards))
 	if err := s.parallelShards(func(shardID int, shard VectorService) error {
 		if filtered, ok := shard.(filteredMetricVectorService); ok {
-			results, err := filtered.SearchFilteredMetric(values, k, filter, metric)
+			results, err := SearchFilteredMetricWithContext(ctx, filtered, values, k, filter, metric)
 			perShard[shardID] = results
 			return err
 		}
 		if metric == MetricL2 && filter == nil {
-			results, err := shard.Search(values, k)
+			results, err := SearchWithContext(ctx, shard, values, k)
 			perShard[shardID] = results
 			return err
 		}
@@ -1196,17 +1208,24 @@ func (s *ShardedService) WarmMetricANN(metrics []DistanceMetric) error {
 // SearchStructured preserves shard-local candidate reduction for text
 // queries, then merges the bounded top-k result from each shard.
 func (s *ShardedService) SearchStructured(values []float64, k int, filter StructuredFilter, metric DistanceMetric) ([]SearchResult, error) {
+	return s.SearchStructuredContext(context.Background(), values, k, filter, metric)
+}
+
+func (s *ShardedService) SearchStructuredContext(ctx context.Context, values []float64, k int, filter StructuredFilter, metric DistanceMetric) ([]SearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	perShard := make([][]SearchResult, len(s.shards))
 	if err := s.parallelShards(func(shardID int, shard VectorService) error {
 		if structured, ok := shard.(interface {
 			SearchStructured([]float64, int, StructuredFilter, DistanceMetric) ([]SearchResult, error)
 		}); ok {
-			results, err := structured.SearchStructured(values, k, filter, metric)
+			results, err := SearchStructuredWithContext(ctx, structured, values, k, filter, metric)
 			perShard[shardID] = results
 			return err
 		}
 		if filtered, ok := shard.(filteredMetricVectorService); ok {
-			results, err := filtered.SearchFilteredMetric(values, k, filter.Match, metric)
+			results, err := SearchFilteredMetricWithContext(ctx, filtered, values, k, filter.Match, metric)
 			perShard[shardID] = results
 			return err
 		}
@@ -1218,12 +1237,16 @@ func (s *ShardedService) SearchStructured(values []float64, k int, filter Struct
 }
 
 func (s *ShardedService) SearchBatch(queries []BatchSearchQuery) ([]BatchSearchResult, error) {
+	return s.SearchBatchContext(context.Background(), queries)
+}
+
+func (s *ShardedService) SearchBatchContext(ctx context.Context, queries []BatchSearchQuery) ([]BatchSearchResult, error) {
 	if len(queries) == 0 {
 		return nil, ErrInvalidValues
 	}
 	perShard := make([][]BatchSearchResult, len(s.shards))
 	if err := s.parallelShards(func(shardID int, shard VectorService) error {
-		results, err := shard.SearchBatch(queries)
+		results, err := SearchBatchWithContext(ctx, shard, queries)
 		perShard[shardID] = results
 		return err
 	}); err != nil {
@@ -1370,6 +1393,10 @@ func (s *ShardedService) Stats() ServiceStats {
 			stats.ANNM = part.ANNM
 			stats.ANNEfConstruction = part.ANNEfConstruction
 			stats.ANNEfSearch = part.ANNEfSearch
+			stats.ANNSearchExecution = part.ANNSearchExecution
+			stats.ANNEFBudgetMode = part.ANNEFBudgetMode
+			stats.ANNEFGlobalPercent = part.ANNEFGlobalPercent
+			stats.ANNPrimaryIndexEnabled = part.ANNPrimaryIndexEnabled
 		}
 		stats.ANNCheckpointLoaded = stats.ANNCheckpointLoaded && part.ANNCheckpointLoaded
 	}
@@ -1387,20 +1414,24 @@ func (s *ShardedService) parallelShardsLimit(limit int, fn func(int, VectorServi
 	if limit <= 0 {
 		limit = 1
 	}
-	sem := make(chan struct{}, limit)
 	errCh := make(chan error, len(s.shards))
 	var wg sync.WaitGroup
-	for shardID, shard := range s.shards {
+	jobs := make(chan int)
+	for worker := 0; worker < min(limit, len(s.shards)); worker++ {
 		wg.Add(1)
-		go func(shardID int, shard VectorService) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if err := fn(shardID, shard); err != nil {
-				errCh <- err
+			for shardID := range jobs {
+				if err := fn(shardID, s.shards[shardID]); err != nil {
+					errCh <- err
+				}
 			}
-		}(shardID, shard)
+		}()
 	}
+	for shardID := range s.shards {
+		jobs <- shardID
+	}
+	close(jobs)
 	wg.Wait()
 	close(errCh)
 	return errors.Join(readErrors(errCh)...)
@@ -1468,6 +1499,31 @@ func (s *ServiceStats) add(other ServiceStats) {
 	s.ANNNodes += other.ANNNodes
 	s.ANNDeleted += other.ANNDeleted
 	s.ANNSegments += other.ANNSegments
+	s.ANNCompactionPending += other.ANNCompactionPending
+	s.ANNCompacting += other.ANNCompacting
+	s.ANNCompactionCompactable += other.ANNCompactionCompactable
+	s.ANNReaders += other.ANNReaders
+	s.ANNRetiredSegments += other.ANNRetiredSegments
+	s.ANNReclaimedSegments += other.ANNReclaimedSegments
+	s.ANNReclaimErrors += other.ANNReclaimErrors
+	if other.ANNCompactionMemoryBudget > s.ANNCompactionMemoryBudget {
+		s.ANNCompactionMemoryBudget = other.ANNCompactionMemoryBudget
+	}
+	s.ANNCompactionMemoryReserved += other.ANNCompactionMemoryReserved
+	if other.ANNCompactionMemoryEstimate > s.ANNCompactionMemoryEstimate {
+		s.ANNCompactionMemoryEstimate = other.ANNCompactionMemoryEstimate
+	}
+	s.ANNCompactionMemoryDeferred += other.ANNCompactionMemoryDeferred
+	s.ANNPrimaryBuildActive = s.ANNPrimaryBuildActive || other.ANNPrimaryBuildActive
+	s.ANNPrimaryBuildTotal += other.ANNPrimaryBuildTotal
+	s.ANNPrimaryBuildDone += other.ANNPrimaryBuildDone
+	if other.ANNPrimaryBuildDurationMs > s.ANNPrimaryBuildDurationMs {
+		s.ANNPrimaryBuildDurationMs = other.ANNPrimaryBuildDurationMs
+	}
+	s.ANNPrimaryBuildFailures += other.ANNPrimaryBuildFailures
+	s.ANNSearchBudgetQueries += other.ANNSearchBudgetQueries
+	s.ANNSearchBudgetSegments += other.ANNSearchBudgetSegments
+	s.ANNSearchEFBudget += other.ANNSearchEFBudget
 	s.CacheHitsTotal += other.CacheHitsTotal
 	s.CacheMissesTotal += other.CacheMissesTotal
 	s.CacheEvictionsTotal += other.CacheEvictionsTotal

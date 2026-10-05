@@ -24,7 +24,10 @@ func newBackendBenchmarkData(b *testing.B) *backendBenchmarkData {
 		}
 	}
 	for n := range d.queries {
-		d.queries[n] = append([]float64(nil), d.vectors[n]...)
+		d.queries[n] = make([]float64, 128)
+		for dim := range d.queries[n] {
+			d.queries[n][dim] = rng.Float64()
+		}
 	}
 	d.hnsw = NewAnnIndexWithOptions(Options{M: 16, EfConstruction: 64, EfSearch: 64})
 	for n, vector := range d.vectors {
@@ -75,6 +78,12 @@ func BenchmarkANNBackends100k(b *testing.B) {
 		}},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
+			for _, query := range d.queries {
+				if _, err := tc.search(query); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ResetTimer()
 			b.ReportAllocs()
 			for n := 0; n < b.N; n++ {
 				if _, err := tc.search(d.queries[n%len(d.queries)]); err != nil {

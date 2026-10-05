@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"math"
 	"sort"
 	"strings"
@@ -67,9 +68,20 @@ func (s *Service) SearchFilteredMetric(values []float64, k int, filter VectorFil
 	return s.searchFilteredMetric(values, k, filter, metric, nil)
 }
 
+func (s *Service) SearchFilteredMetricContext(ctx context.Context, values []float64, k int, filter VectorFilter, metric DistanceMetric) ([]SearchResult, error) {
+	return s.searchFilteredMetric(values, k, filter, metric, nil, ctx)
+}
+
 // SearchStructured uses the inverted text index to narrow candidates before
 // evaluating the structured predicate and vector distance.
 func (s *Service) SearchStructured(values []float64, k int, filter StructuredFilter, metric DistanceMetric) ([]SearchResult, error) {
+	return s.SearchStructuredContext(context.Background(), values, k, filter, metric)
+}
+
+func (s *Service) SearchStructuredContext(ctx context.Context, values []float64, k int, filter StructuredFilter, metric DistanceMetric) ([]SearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := validateDistanceMetric(metric); err != nil {
 		return nil, err
 	}
@@ -77,7 +89,15 @@ func (s *Service) SearchStructured(values []float64, k int, filter StructuredFil
 	// incrementally in AddVectors/AddVectorWithMetadata.
 	textQuery := strings.ToLower(strings.TrimSpace(filter.TextQuery))
 	if textQuery != "" {
-		s.textIndexOnce.Do(func() {
+		err := func() error {
+			s.textIndexInitMu.Lock()
+			defer s.textIndexInitMu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if s.textIndexReady.Load() {
+				return nil
+			}
 			indexVector := func(id string) {
 				s.withMetadataReadOnly(id, func(metadata map[string]string) bool {
 					var local [9]string
@@ -97,14 +117,30 @@ func (s *Service) SearchStructured(values []float64, k int, filter StructuredFil
 				})
 			}
 			if ids, ok := s.vectorStore.(rangeVectorIDReader); ok {
-				ids.RangeVectorIDs(func(id string) bool { indexVector(id); return true })
+				ids.RangeVectorIDs(func(id string) bool {
+					if ctx.Err() != nil {
+						return false
+					}
+					indexVector(id)
+					return true
+				})
 			} else {
 				for _, vec := range s.ListVectors() {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					indexVector(vec.ID)
 				}
 			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			s.textIndexReady.Store(true)
-		})
+			return nil
+		}()
+		if err != nil {
+			return nil, err
+		}
 	}
 	matcher := func(v index.Vector) bool {
 		if len(filter.IDs) > 0 {
@@ -134,7 +170,7 @@ func (s *Service) SearchStructured(values []float64, k int, filter StructuredFil
 		if selected, ok := s.vectorStore.(selectedVectorIDs32Reader); ok {
 			for key, expected := range filter.Metadata {
 				ids := s.textIndex.searchMetadataIDs(key, expected)
-				return s.searchStructuredDirectIDs(values, k, metric, ids, selected)
+				return s.searchStructuredDirectIDs(values, k, metric, ids, selected, ctx)
 			}
 		}
 	}
@@ -147,6 +183,9 @@ func (s *Service) SearchStructured(values []float64, k int, filter StructuredFil
 			return
 		}
 		for id := range candidateIDs {
+			if ctx.Err() != nil {
+				return
+			}
 			if _, ok := ids[id]; !ok {
 				delete(candidateIDs, id)
 			}
@@ -161,6 +200,9 @@ func (s *Service) SearchStructured(values []float64, k int, filter StructuredFil
 		// it because intersections must not mutate the caller's filter.
 		ids := make(map[string]struct{}, len(filter.IDs))
 		for id := range filter.IDs {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			ids[id] = struct{}{}
 		}
 		intersect(ids)
@@ -185,7 +227,7 @@ func (s *Service) SearchStructured(values []float64, k int, filter StructuredFil
 					candidateIDs[id] = struct{}{}
 					return true
 				})
-				return s.searchStructuredDirect(values, k, filter, matcher, metric, candidateIDs, reader)
+				return s.searchStructuredDirect(values, k, filter, matcher, metric, candidateIDs, reader, ctx)
 			}
 		}
 	}
@@ -198,32 +240,56 @@ func (s *Service) SearchStructured(values []float64, k int, filter StructuredFil
 			if textQuery == "" {
 				matcher = nil
 			}
-			return s.searchStructuredDirect(values, k, filter, matcher, metric, candidateIDs, reader)
+			return s.searchStructuredDirect(values, k, filter, matcher, metric, candidateIDs, reader, ctx)
 		}
 	}
-	return s.searchFilteredMetric(values, k, matcher, metric, candidateIDs)
+	return s.searchFilteredMetric(values, k, matcher, metric, candidateIDs, ctx)
 }
 
-func (s *Service) searchStructuredDirectIDs(values []float64, k int, metric DistanceMetric, candidates []string, reader selectedVectorIDs32Reader) ([]SearchResult, error) {
+func filterContext(contexts []context.Context) context.Context {
+	if len(contexts) > 0 {
+		return contexts[0]
+	}
+	return context.Background()
+}
+
+func (s *Service) searchStructuredDirectIDs(values []float64, k int, metric DistanceMetric, candidates []string, reader selectedVectorIDs32Reader, contexts ...context.Context) ([]SearchResult, error) {
+	ctx := filterContext(contexts)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.validateSearchRequest(values, k); err != nil {
 		return nil, err
 	}
 	query := newMultiVectorQuery(values, metric)
 	acc := newTopKAccumulator(k)
 	reader.RangeSelectedVectorIDs32(candidates, func(id string, vectorValues []float32) bool {
+		if ctx.Err() != nil {
+			return false
+		}
 		acc.Add(SearchResult{ID: id, Distance: query.distance32(vectorValues)})
 		return true
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return acc.ResultsRaw(), nil
 }
 
-func (s *Service) searchStructuredDirect(values []float64, k int, filter StructuredFilter, matcher VectorFilter, metric DistanceMetric, candidates map[string]struct{}, reader readOnlyVector32Reader) ([]SearchResult, error) {
+func (s *Service) searchStructuredDirect(values []float64, k int, filter StructuredFilter, matcher VectorFilter, metric DistanceMetric, candidates map[string]struct{}, reader readOnlyVector32Reader, contexts ...context.Context) ([]SearchResult, error) {
+	ctx := filterContext(contexts)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.validateSearchRequest(values, k); err != nil {
 		return nil, err
 	}
 	query := newMultiVectorQuery(values, metric)
 	acc := newTopKAccumulator(k)
 	visit := func(id string, vectorValues []float32) bool {
+		if ctx.Err() != nil {
+			return false
+		}
 		if matcher != nil {
 			matched := s.withMetadataReadOnly(id, func(metadata map[string]string) bool {
 				return matcher(index.Vector{ID: id, Metadata: metadata})
@@ -237,9 +303,15 @@ func (s *Service) searchStructuredDirect(values []float64, k int, filter Structu
 	}
 	if selected, ok := reader.(selectedVector32Reader); ok {
 		selected.RangeSelectedVectors32(candidates, visit)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return acc.ResultsRaw(), nil
 	}
 	for id := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		vectorValues, err := reader.GetVectorReadOnly32(id)
 		if err != nil {
 			continue
@@ -248,10 +320,17 @@ func (s *Service) searchStructuredDirect(values []float64, k int, filter Structu
 			break
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return acc.ResultsRaw(), nil
 }
 
-func (s *Service) searchFilteredMetric(values []float64, k int, filter VectorFilter, metric DistanceMetric, candidateIDs map[string]struct{}) ([]SearchResult, error) {
+func (s *Service) searchFilteredMetric(values []float64, k int, filter VectorFilter, metric DistanceMetric, candidateIDs map[string]struct{}, contexts ...context.Context) ([]SearchResult, error) {
+	ctx := filterContext(contexts)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.validateSearchRequest(values, k); err != nil {
 		return nil, err
 	}
@@ -259,11 +338,14 @@ func (s *Service) searchFilteredMetric(values []float64, k int, filter VectorFil
 		return nil, err
 	}
 	if filter == nil && metric == MetricL2 {
-		return s.Search(values, k)
+		return s.SearchContext(ctx, values, k)
 	}
 	if filter == nil && s.searchMode == "ann" && (metric == MetricCosine || metric == MetricInnerProduct) {
-		if results, err := s.searchMetricANN(values, k, metric); err == nil {
+		if results, err := s.searchMetricANN(values, k, metric, ctx); err == nil {
 			return results, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		// The canonical store remains the correctness fallback when an
 		// auxiliary ANN generation cannot be built or queried.
@@ -279,6 +361,9 @@ func (s *Service) searchFilteredMetric(values []float64, k int, filter VectorFil
 		acc := newTopKAccumulator(k)
 		var filterValues []float64
 		reader.RangeVectors32(func(id string, vectorValues []float32) bool {
+			if ctx.Err() != nil {
+				return false
+			}
 			if candidateIDs != nil {
 				if _, exists := candidateIDs[id]; !exists {
 					return true
@@ -300,6 +385,9 @@ func (s *Service) searchFilteredMetric(values []float64, k int, filter VectorFil
 			}
 			return true
 		})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return acc.ResultsRaw(), nil
 	}
 	acc := newTopKAccumulator(k)
@@ -310,6 +398,9 @@ func (s *Service) searchFilteredMetric(values []float64, k int, filter VectorFil
 	vectors := s.ListVectors()
 	var scratch []float32
 	for _, vec := range vectors {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if candidateIDs != nil {
 			if _, ok := candidateIDs[vec.ID]; !ok {
 				continue
@@ -348,10 +439,14 @@ func (s *Service) searchFilteredMetric(values []float64, k int, filter VectorFil
 		}
 		acc.Add(SearchResult{ID: vec.ID, Distance: distance})
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return acc.ResultsRaw(), nil
 }
 
-func (s *Service) searchMetricANN(values []float64, k int, metric DistanceMetric) ([]SearchResult, error) {
+func (s *Service) searchMetricANN(values []float64, k int, metric DistanceMetric, contexts ...context.Context) ([]SearchResult, error) {
+	ctx := filterContext(contexts)
 	candidateK := max(k*20, 100)
 	if s.annAdaptive && s.annMinCandidates > candidateK {
 		candidateK = s.annMinCandidates
@@ -361,6 +456,9 @@ func (s *Service) searchMetricANN(values []float64, k int, metric DistanceMetric
 	}
 	var candidates []ann.Result
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		metricIndex, err := s.metricANNIndex(metric)
 		if err != nil {
 			return nil, err
@@ -370,7 +468,13 @@ func (s *Service) searchMetricANN(values []float64, k int, metric DistanceMetric
 			s.metricANNMu.RUnlock()
 			continue
 		}
-		candidates, err = metricIndex.SearchWithDistancesInto(values, candidateK, nil)
+		if contextual, ok := metricIndex.(interface {
+			SearchWithDistancesContext(context.Context, []float64, int, []ann.Result) ([]ann.Result, error)
+		}); ok {
+			candidates, err = contextual.SearchWithDistancesContext(ctx, values, candidateK, nil)
+		} else {
+			candidates, err = metricIndex.SearchWithDistancesInto(values, candidateK, nil)
+		}
 		s.metricANNMu.RUnlock()
 		if err != nil {
 			return nil, err
@@ -381,6 +485,9 @@ func (s *Service) searchMetricANN(values []float64, k int, metric DistanceMetric
 	acc := newTopKAccumulator(k)
 	candidateIDs := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		id, ok, err := s.lookupID(candidate.ID)
 		if err != nil || !ok {
 			continue
@@ -389,12 +496,21 @@ func (s *Service) searchMetricANN(values []float64, k int, metric DistanceMetric
 	}
 	if reader, ok := s.vectorStore.(selectedVectorIDs32Reader); ok {
 		reader.RangeSelectedVectorIDs32(candidateIDs, func(id string, vectorValues []float32) bool {
+			if ctx.Err() != nil {
+				return false
+			}
 			acc.Add(SearchResult{ID: id, Distance: query.distance32(vectorValues)})
 			return true
 		})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return acc.ResultsRaw(), nil
 	}
 	for _, id := range candidateIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		vector, err := s.vectorStore.GetVector(id)
 		if err != nil {
 			continue

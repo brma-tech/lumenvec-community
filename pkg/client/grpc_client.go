@@ -502,10 +502,14 @@ func (c *GRPCVectorClient) SearchVector(vector []float64, k int) ([]SearchResult
 // SearchVectorMetric executes an unfiltered search using the requested public
 // distance metric. An empty metric preserves the historical L2 behavior.
 func (c *GRPCVectorClient) SearchVectorMetric(vector []float64, k int, metric string) ([]SearchResult, error) {
+	return c.SearchVectorMetricContext(context.Background(), vector, k, metric)
+}
+
+func (c *GRPCVectorClient) SearchVectorMetricContext(parent context.Context, vector []float64, k int, metric string) ([]SearchResult, error) {
 	if k <= 0 || int64(k) > int64(^uint32(0)>>1) {
 		return nil, fmt.Errorf("k out of int32 range: %d", k)
 	}
-	ctx, cancel := c.context()
+	ctx, cancel := context.WithTimeout(parent, c.timeout)
 	defer cancel()
 	resp, err := c.client.Search(ctx, &lumenvecpb.SearchRequest{
 		Values: vector,
@@ -519,6 +523,10 @@ func (c *GRPCVectorClient) SearchVectorMetric(vector []float64, k int, metric st
 }
 
 func (c *GRPCVectorClient) SearchVectors(queries []BatchSearchQuery) ([]BatchSearchResult, error) {
+	return c.SearchVectorsContext(context.Background(), queries)
+}
+
+func (c *GRPCVectorClient) SearchVectorsContext(parent context.Context, queries []BatchSearchQuery) ([]BatchSearchResult, error) {
 	items := make([]*lumenvecpb.SearchBatchQuery, 0, len(queries))
 	for _, query := range queries {
 		if query.K <= 0 || int64(query.K) > int64(^uint32(0)>>1) {
@@ -531,7 +539,7 @@ func (c *GRPCVectorClient) SearchVectors(queries []BatchSearchQuery) ([]BatchSea
 			TopK:      boundedTopK(query.K),
 		})
 	}
-	ctx, cancel := c.context()
+	ctx, cancel := context.WithTimeout(parent, c.timeout)
 	defer cancel()
 	resp, err := c.client.SearchBatch(ctx, &lumenvecpb.SearchBatchRequest{Queries: items})
 	if err != nil {

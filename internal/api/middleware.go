@@ -286,38 +286,57 @@ func (s *Server) writeAccessLog(r *http.Request, status int, duration time.Durat
 type coreMetricsCollector struct {
 	service core.VectorService
 
-	searchRequestsDesc       *prometheus.Desc
-	exactSearchesDesc        *prometheus.Desc
-	annSearchesDesc          *prometheus.Desc
-	annSearchHitsDesc        *prometheus.Desc
-	annSearchFallbacks       *prometheus.Desc
-	annSearchErrorsDesc      *prometheus.Desc
-	annCandidatesDesc        *prometheus.Desc
-	annSegmentsDesc          *prometheus.Desc
-	annCheckpointLoadedDesc  *prometheus.Desc
-	shardCountDesc           *prometheus.Desc
-	replicationCommittedDesc *prometheus.Desc
-	replicationAppliedDesc   *prometheus.Desc
-	replicationPendingDesc   *prometheus.Desc
-	replicationFailuresDesc  *prometheus.Desc
-	replicationTermDesc      *prometheus.Desc
-	replicationFailoversDesc *prometheus.Desc
-	annEvalSamplesDesc       *prometheus.Desc
-	annEvalTop1MatchesDesc   *prometheus.Desc
-	annEvalOverlapDesc       *prometheus.Desc
-	annEvalComparedDesc      *prometheus.Desc
-	cacheHitsDesc            *prometheus.Desc
-	cacheMissesDesc          *prometheus.Desc
-	cacheEvictionsDesc       *prometheus.Desc
-	cacheItemsDesc           *prometheus.Desc
-	cacheBytesDesc           *prometheus.Desc
-	diskFileBytesDesc        *prometheus.Desc
-	diskRecordsDesc          *prometheus.Desc
-	diskStaleRecordsDesc     *prometheus.Desc
-	diskCompactionsDesc      *prometheus.Desc
-	diskCompactionActiveDesc *prometheus.Desc
-	diskSegmentsDesc         *prometheus.Desc
-	annConfigInfoDesc        *prometheus.Desc
+	searchRequestsDesc              *prometheus.Desc
+	exactSearchesDesc               *prometheus.Desc
+	annSearchesDesc                 *prometheus.Desc
+	annSearchHitsDesc               *prometheus.Desc
+	annSearchFallbacks              *prometheus.Desc
+	annSearchErrorsDesc             *prometheus.Desc
+	annCandidatesDesc               *prometheus.Desc
+	annSegmentsDesc                 *prometheus.Desc
+	annCompactionPendingDesc        *prometheus.Desc
+	annCompactingDesc               *prometheus.Desc
+	annCompactableDesc              *prometheus.Desc
+	annReadersDesc                  *prometheus.Desc
+	annRetiredDesc                  *prometheus.Desc
+	annReclaimedDesc                *prometheus.Desc
+	annReclaimErrorsDesc            *prometheus.Desc
+	annCompactionMemoryBudgetDesc   *prometheus.Desc
+	annCompactionMemoryReservedDesc *prometheus.Desc
+	annCompactionMemoryEstimateDesc *prometheus.Desc
+	annCompactionMemoryDeferredDesc *prometheus.Desc
+	annPrimaryBuildActiveDesc       *prometheus.Desc
+	annPrimaryBuildTotalDesc        *prometheus.Desc
+	annPrimaryBuildDoneDesc         *prometheus.Desc
+	annPrimaryBuildDurationDesc     *prometheus.Desc
+	annPrimaryBuildFailuresDesc     *prometheus.Desc
+	annSearchBudgetQueriesDesc      *prometheus.Desc
+	annSearchBudgetSegmentsDesc     *prometheus.Desc
+	annSearchEFBudgetDesc           *prometheus.Desc
+	annCheckpointLoadedDesc         *prometheus.Desc
+	shardCountDesc                  *prometheus.Desc
+	replicationCommittedDesc        *prometheus.Desc
+	replicationAppliedDesc          *prometheus.Desc
+	replicationPendingDesc          *prometheus.Desc
+	replicationFailuresDesc         *prometheus.Desc
+	replicationTermDesc             *prometheus.Desc
+	replicationFailoversDesc        *prometheus.Desc
+	annEvalSamplesDesc              *prometheus.Desc
+	annEvalTop1MatchesDesc          *prometheus.Desc
+	annEvalOverlapDesc              *prometheus.Desc
+	annEvalComparedDesc             *prometheus.Desc
+	cacheHitsDesc                   *prometheus.Desc
+	cacheMissesDesc                 *prometheus.Desc
+	cacheEvictionsDesc              *prometheus.Desc
+	cacheItemsDesc                  *prometheus.Desc
+	cacheBytesDesc                  *prometheus.Desc
+	diskFileBytesDesc               *prometheus.Desc
+	diskRecordsDesc                 *prometheus.Desc
+	diskStaleRecordsDesc            *prometheus.Desc
+	diskCompactionsDesc             *prometheus.Desc
+	diskCompactionActiveDesc        *prometheus.Desc
+	diskSegmentsDesc                *prometheus.Desc
+	annConfigInfoDesc               *prometheus.Desc
 }
 
 func newCoreMetricsCollector(service core.VectorService) *coreMetricsCollector {
@@ -371,6 +390,46 @@ func newCoreMetricsCollector(service core.VectorService) *coreMetricsCollector {
 			nil,
 			nil,
 		),
+		annCompactionPendingDesc: prometheus.NewDesc(
+			"lumenvec_core_ann_compaction_pending",
+			"Number of shards with queued ANN consolidation work.", nil, nil,
+		),
+		annCompactingDesc: prometheus.NewDesc(
+			"lumenvec_core_ann_compacting",
+			"Number of shards actively rebuilding an ANN generation.", nil, nil,
+		),
+		annCompactableDesc: prometheus.NewDesc(
+			"lumenvec_core_ann_compaction_compactable",
+			"Number of shards whose leading ANN generations can still be consolidated.", nil, nil,
+		),
+		annReadersDesc: prometheus.NewDesc(
+			"lumenvec_core_ann_readers",
+			"Current readers pinning ANN generations.", nil, nil,
+		),
+		annRetiredDesc: prometheus.NewDesc(
+			"lumenvec_core_ann_retired_segments",
+			"Retired ANN segments waiting for their final reader.", nil, nil,
+		),
+		annReclaimedDesc: prometheus.NewDesc(
+			"lumenvec_core_ann_reclaimed_segments_total",
+			"ANN segments closed after reader-safe retirement.", nil, nil,
+		),
+		annReclaimErrorsDesc: prometheus.NewDesc(
+			"lumenvec_core_ann_reclaim_errors_total",
+			"Errors while closing reader-safe retired ANN segments.", nil, nil,
+		),
+		annCompactionMemoryBudgetDesc:   prometheus.NewDesc("lumenvec_core_ann_compaction_memory_budget_bytes", "Process-wide ANN compaction build-memory budget; zero means observation mode.", nil, nil),
+		annCompactionMemoryReservedDesc: prometheus.NewDesc("lumenvec_core_ann_compaction_memory_reserved_bytes", "ANN compaction build memory currently reserved by shards.", nil, nil),
+		annCompactionMemoryEstimateDesc: prometheus.NewDesc("lumenvec_core_ann_compaction_memory_estimate_bytes", "Largest most recent per-shard ANN compaction build-memory estimate.", nil, nil),
+		annCompactionMemoryDeferredDesc: prometheus.NewDesc("lumenvec_core_ann_compaction_memory_deferred_total", "ANN compactions deferred because the process-wide memory budget was unavailable.", nil, nil),
+		annPrimaryBuildActiveDesc:       prometheus.NewDesc("lumenvec_core_ann_primary_build_active", "Whether an ANN primary generation build is active.", nil, nil),
+		annPrimaryBuildTotalDesc:        prometheus.NewDesc("lumenvec_core_ann_primary_build_vectors_total", "Vectors in the current ANN primary generation build.", nil, nil),
+		annPrimaryBuildDoneDesc:         prometheus.NewDesc("lumenvec_core_ann_primary_build_vectors_done", "Vectors processed by the current ANN primary generation build.", nil, nil),
+		annPrimaryBuildDurationDesc:     prometheus.NewDesc("lumenvec_core_ann_primary_build_duration_ms", "Duration of the most recent ANN primary generation build in milliseconds.", nil, nil),
+		annPrimaryBuildFailuresDesc:     prometheus.NewDesc("lumenvec_core_ann_primary_build_failures_total", "Failed ANN primary generation builds.", nil, nil),
+		annSearchBudgetQueriesDesc:      prometheus.NewDesc("lumenvec_core_ann_search_budget_queries_total", "ANN queries included in fanout and exploration-budget accounting.", nil, nil),
+		annSearchBudgetSegmentsDesc:     prometheus.NewDesc("lumenvec_core_ann_search_budget_segments_total", "ANN segment searches executed by budget-accounted queries.", nil, nil),
+		annSearchEFBudgetDesc:           prometheus.NewDesc("lumenvec_core_ann_search_ef_budget_total", "Sum of effective efSearch budgets assigned across ANN segment searches.", nil, nil),
 		annCheckpointLoadedDesc: prometheus.NewDesc(
 			"lumenvec_core_ann_checkpoint_loaded",
 			"Whether the ANN index was restored from a validated checkpoint.",
@@ -477,7 +536,7 @@ func newCoreMetricsCollector(service core.VectorService) *coreMetricsCollector {
 		annConfigInfoDesc: prometheus.NewDesc(
 			"lumenvec_core_ann_config_info",
 			"Effective ANN configuration exposed as labels.",
-			[]string{"profile", "m", "ef_construction", "ef_search"},
+			[]string{"profile", "m", "ef_construction", "ef_search", "search_execution", "ef_budget", "ef_global_percent", "primary_index"},
 			nil,
 		),
 	}
@@ -492,6 +551,25 @@ func (c *coreMetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.annSearchErrorsDesc
 	ch <- c.annCandidatesDesc
 	ch <- c.annSegmentsDesc
+	ch <- c.annCompactionPendingDesc
+	ch <- c.annCompactingDesc
+	ch <- c.annCompactableDesc
+	ch <- c.annReadersDesc
+	ch <- c.annRetiredDesc
+	ch <- c.annReclaimedDesc
+	ch <- c.annReclaimErrorsDesc
+	ch <- c.annCompactionMemoryBudgetDesc
+	ch <- c.annCompactionMemoryReservedDesc
+	ch <- c.annCompactionMemoryEstimateDesc
+	ch <- c.annCompactionMemoryDeferredDesc
+	ch <- c.annPrimaryBuildActiveDesc
+	ch <- c.annPrimaryBuildTotalDesc
+	ch <- c.annPrimaryBuildDoneDesc
+	ch <- c.annPrimaryBuildDurationDesc
+	ch <- c.annPrimaryBuildFailuresDesc
+	ch <- c.annSearchBudgetQueriesDesc
+	ch <- c.annSearchBudgetSegmentsDesc
+	ch <- c.annSearchEFBudgetDesc
 	ch <- c.annCheckpointLoadedDesc
 	ch <- c.shardCountDesc
 	ch <- c.replicationCommittedDesc
@@ -528,6 +606,29 @@ func (c *coreMetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.annSearchErrorsDesc, prometheus.CounterValue, float64(stats.ANNSearchErrorsTotal))
 	ch <- prometheus.MustNewConstMetric(c.annCandidatesDesc, prometheus.CounterValue, float64(stats.ANNCandidatesReturned))
 	ch <- prometheus.MustNewConstMetric(c.annSegmentsDesc, prometheus.GaugeValue, float64(stats.ANNSegments))
+	ch <- prometheus.MustNewConstMetric(c.annCompactionPendingDesc, prometheus.GaugeValue, float64(stats.ANNCompactionPending))
+	ch <- prometheus.MustNewConstMetric(c.annCompactingDesc, prometheus.GaugeValue, float64(stats.ANNCompacting))
+	ch <- prometheus.MustNewConstMetric(c.annCompactableDesc, prometheus.GaugeValue, float64(stats.ANNCompactionCompactable))
+	ch <- prometheus.MustNewConstMetric(c.annReadersDesc, prometheus.GaugeValue, float64(stats.ANNReaders))
+	ch <- prometheus.MustNewConstMetric(c.annRetiredDesc, prometheus.GaugeValue, float64(stats.ANNRetiredSegments))
+	ch <- prometheus.MustNewConstMetric(c.annReclaimedDesc, prometheus.CounterValue, float64(stats.ANNReclaimedSegments))
+	ch <- prometheus.MustNewConstMetric(c.annReclaimErrorsDesc, prometheus.CounterValue, float64(stats.ANNReclaimErrors))
+	ch <- prometheus.MustNewConstMetric(c.annCompactionMemoryBudgetDesc, prometheus.GaugeValue, float64(stats.ANNCompactionMemoryBudget))
+	ch <- prometheus.MustNewConstMetric(c.annCompactionMemoryReservedDesc, prometheus.GaugeValue, float64(stats.ANNCompactionMemoryReserved))
+	ch <- prometheus.MustNewConstMetric(c.annCompactionMemoryEstimateDesc, prometheus.GaugeValue, float64(stats.ANNCompactionMemoryEstimate))
+	ch <- prometheus.MustNewConstMetric(c.annCompactionMemoryDeferredDesc, prometheus.CounterValue, float64(stats.ANNCompactionMemoryDeferred))
+	primaryActive := 0.0
+	if stats.ANNPrimaryBuildActive {
+		primaryActive = 1
+	}
+	ch <- prometheus.MustNewConstMetric(c.annPrimaryBuildActiveDesc, prometheus.GaugeValue, primaryActive)
+	ch <- prometheus.MustNewConstMetric(c.annPrimaryBuildTotalDesc, prometheus.GaugeValue, float64(stats.ANNPrimaryBuildTotal))
+	ch <- prometheus.MustNewConstMetric(c.annPrimaryBuildDoneDesc, prometheus.GaugeValue, float64(stats.ANNPrimaryBuildDone))
+	ch <- prometheus.MustNewConstMetric(c.annPrimaryBuildDurationDesc, prometheus.GaugeValue, float64(stats.ANNPrimaryBuildDurationMs))
+	ch <- prometheus.MustNewConstMetric(c.annPrimaryBuildFailuresDesc, prometheus.CounterValue, float64(stats.ANNPrimaryBuildFailures))
+	ch <- prometheus.MustNewConstMetric(c.annSearchBudgetQueriesDesc, prometheus.CounterValue, float64(stats.ANNSearchBudgetQueries))
+	ch <- prometheus.MustNewConstMetric(c.annSearchBudgetSegmentsDesc, prometheus.CounterValue, float64(stats.ANNSearchBudgetSegments))
+	ch <- prometheus.MustNewConstMetric(c.annSearchEFBudgetDesc, prometheus.CounterValue, float64(stats.ANNSearchEFBudget))
 	checkpointLoaded := 0.0
 	if stats.ANNCheckpointLoaded {
 		checkpointLoaded = 1
@@ -571,6 +672,10 @@ func (c *coreMetricsCollector) Collect(ch chan<- prometheus.Metric) {
 		strconv.Itoa(stats.ANNM),
 		strconv.Itoa(stats.ANNEfConstruction),
 		strconv.Itoa(stats.ANNEfSearch),
+		stats.ANNSearchExecution,
+		stats.ANNEFBudgetMode,
+		strconv.Itoa(stats.ANNEFGlobalPercent),
+		strconv.FormatBool(stats.ANNPrimaryIndexEnabled),
 	)
 }
 
